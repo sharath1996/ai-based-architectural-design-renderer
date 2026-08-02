@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+.env
+backend_api/.env
+frontend_streamlit/.streamlit/
+.DS_Store
+Thumbs.db
+
+ref_01/
