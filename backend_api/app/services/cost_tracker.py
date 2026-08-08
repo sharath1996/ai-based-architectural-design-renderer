@@ -221,6 +221,17 @@ class CostTracker:
         return activity
 
     def _estimate_cost(self, model: str, usage: dict[str, Any]) -> float | None:
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+
+        detailed_cost = self._estimate_detailed_cost(
+            model=model,
+            input_details=input_details,
+            output_details=output_details,
+        )
+        if detailed_cost is not None:
+            return detailed_cost
+
         input_tokens = usage.get("input_tokens")
         if input_tokens is None:
             input_tokens = usage.get("prompt_tokens", 0)
@@ -245,6 +256,53 @@ class CostTracker:
         total_cost = ((input_tokens / 1_000_000) * float(input_price or 0.0)) + (
             (output_tokens / 1_000_000) * float(output_price or 0.0)
         )
+        return round(total_cost, 6)
+
+    def _estimate_detailed_cost(
+        self,
+        *,
+        model: str,
+        input_details: dict[str, Any],
+        output_details: dict[str, Any],
+    ) -> float | None:
+        if not input_details and not output_details:
+            return None
+
+        text_input_tokens = int(input_details.get("text_tokens", 0) or 0)
+        image_input_tokens = int(input_details.get("image_tokens", 0) or 0)
+        text_output_tokens = int(output_details.get("text_tokens", 0) or 0)
+        image_output_tokens = int(output_details.get("image_tokens", 0) or 0)
+
+        text_input_price = _read_price(model, "TEXT_INPUT_PER_1M")
+        image_input_price = _read_price(model, "IMAGE_INPUT_PER_1M")
+        text_output_price = _read_price(model, "TEXT_OUTPUT_PER_1M")
+        image_output_price = _read_price(model, "IMAGE_OUTPUT_PER_1M")
+
+        if text_input_tokens and text_input_price is None:
+            return None
+        if image_input_tokens and image_input_price is None:
+            return None
+        if text_output_tokens and text_output_price is None:
+            return None
+        if image_output_tokens and image_output_price is None:
+            return None
+
+        if all(
+            price is None
+            for price in (
+                text_input_price,
+                image_input_price,
+                text_output_price,
+                image_output_price,
+            )
+        ):
+            return None
+
+        total_cost = 0.0
+        total_cost += (text_input_tokens / 1_000_000) * float(text_input_price or 0.0)
+        total_cost += (image_input_tokens / 1_000_000) * float(image_input_price or 0.0)
+        total_cost += (text_output_tokens / 1_000_000) * float(text_output_price or 0.0)
+        total_cost += (image_output_tokens / 1_000_000) * float(image_output_price or 0.0)
         return round(total_cost, 6)
 
     def _recalculate_totals(self, payload: dict[str, Any]) -> None:
