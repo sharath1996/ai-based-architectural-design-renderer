@@ -25,6 +25,13 @@ REQUIRED_PROMPT_FILES = (
     "generation_prompt_template.txt",
     "spec_extraction_prompt.txt",
 )
+DEFAULT_IMAGE_MODEL = "gpt-image-1"
+DEFAULT_IMAGE_SIZE = "1024x1024"
+AVAILABLE_IMAGE_SIZES = (
+    "1024x1024",
+    "1536x1024",
+    "1024x1536",
+)
 
 class ImageGenerator:
 
@@ -35,6 +42,22 @@ class ImageGenerator:
         self._prompt_pack = prompt_pack or os.getenv("PROMPT_PACK", "architectural_photography")
         self._prompt_pack_dir = self._prompts_dir / self._prompt_pack
         self._prompt_cache: dict[str, str] = {}
+        configured_models = [
+            model.strip()
+            for model in os.getenv("OPENAI_IMAGE_MODEL_OPTIONS", DEFAULT_IMAGE_MODEL).split(",")
+            if model.strip()
+        ]
+        configured_default_model = os.getenv("OPENAI_IMAGE_MODEL", DEFAULT_IMAGE_MODEL).strip() or DEFAULT_IMAGE_MODEL
+        if configured_default_model not in configured_models:
+            configured_models.insert(0, configured_default_model)
+        self._available_image_models = configured_models or [DEFAULT_IMAGE_MODEL]
+        self._default_image_model = configured_default_model
+
+        configured_default_size = os.getenv("OPENAI_IMAGE_SIZE", DEFAULT_IMAGE_SIZE).strip() or DEFAULT_IMAGE_SIZE
+        if configured_default_size in AVAILABLE_IMAGE_SIZES:
+            self._default_image_size = configured_default_size
+        else:
+            self._default_image_size = DEFAULT_IMAGE_SIZE
         self.cost_tracker = cost_tracker or CostTracker()
 
     @property
@@ -114,12 +137,54 @@ class ImageGenerator:
             return None
         return OpenAI(api_key=api_key)
 
-    def _placeholder_image(self, label: str, index: int) -> str:
-        image = Image.new("RGB", (1024, 1024), color=(237, 242, 247))
+    def available_image_models(self) -> list[str]:
+        return list(self._available_image_models)
+
+    def available_image_sizes(self) -> list[str]:
+        return list(AVAILABLE_IMAGE_SIZES)
+
+    def default_image_model(self) -> str:
+        return self._default_image_model
+
+    def default_image_size(self) -> str:
+        return self._default_image_size
+
+    def _select_image_model(self, image_model: str | None) -> str:
+        selected = (image_model or "").strip()
+        if selected in self._available_image_models:
+            return selected
+        return self._default_image_model
+
+    def _select_image_size(self, image_size: str | None) -> str:
+        selected = (image_size or "").strip()
+        if selected in AVAILABLE_IMAGE_SIZES:
+            return selected
+        return self._default_image_size
+
+    def _size_to_dimensions(self, image_size: str) -> tuple[int, int]:
+        try:
+            width_text, height_text = image_size.lower().split("x", 1)
+            width = int(width_text)
+            height = int(height_text)
+            if width > 0 and height > 0:
+                return width, height
+        except (ValueError, AttributeError):
+            pass
+        return 1024, 1024
+
+    def _placeholder_image(self, label: str, index: int, image_size: str = DEFAULT_IMAGE_SIZE) -> str:
+        width, height = self._size_to_dimensions(image_size)
+        image = Image.new("RGB", (width, height), color=(237, 242, 247))
         draw = ImageDraw.Draw(image)
-        draw.rectangle((60, 60, 964, 964), outline=(56, 67, 84), width=6)
-        draw.text((100, 120), f"Reference Output {index + 1}", fill=(31, 41, 55))
-        draw.text((100, 180), label[:160], fill=(75, 85, 99))
+        margin_x = max(40, width // 18)
+        margin_y = max(40, height // 18)
+        draw.rectangle(
+            (margin_x, margin_y, width - margin_x, height - margin_y),
+            outline=(56, 67, 84),
+            width=6,
+        )
+        draw.text((margin_x + 30, margin_y + 40), f"Reference Output {index + 1}", fill=(31, 41, 55))
+        draw.text((margin_x + 30, margin_y + 100), label[:160], fill=(75, 85, 99))
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -277,11 +342,16 @@ class ImageGenerator:
         support_reference_prompts: list[str],
         specifications: Specifications,
         prompt: str,
+        image_model: str | None = None,
+        image_size: str | None = None,
         tracking_context: TrackingContext | None = None,
     ) -> str:
+        selected_image_model = self._select_image_model(image_model)
+        selected_image_size = self._select_image_size(image_size)
+
         client = self._client()
         if not client:
-            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)
+            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0, selected_image_size)
 
         support_reference_context = self._summarize_support_references(
             client=client,
@@ -297,17 +367,17 @@ class ImageGenerator:
                 support_reference_context,
             )
         except FileNotFoundError:
-            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)
+            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0, selected_image_size)
 
         try:
             image_buffer = io.BytesIO(base_reference_image)
             image_buffer.name = "base_reference.png"
 
             edit_result = client.images.edit(
-                model="gpt-image-1",
+                model=selected_image_model,
                 image=image_buffer,
                 prompt=combined_prompt,
-                size="1024x1024",
+                size=selected_image_size,
             )
 
             generated_b64 = None
@@ -318,31 +388,31 @@ class ImageGenerator:
             self.cost_tracker.log_event(
                 tracking_context,
                 step_name="final_image",
-                model="gpt-image-1",
+                model=selected_image_model,
                 usage=getattr(edit_result, "usage", None),
                 success=bool(generated_b64),
                 image_count=1 if generated_b64 else 0,
                 metadata={
                     "support_reference_count": len(support_reference_images),
                     "prompt_pack": self._prompt_pack,
-                    "size": "1024x1024",
+                    "size": selected_image_size,
                 },
                 error_message=None if generated_b64 else "No image data returned from OpenAI.",
             )
 
             if generated_b64:
                 return generated_b64
-            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)
+            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0, selected_image_size)
         except Exception as exc:
             self.cost_tracker.log_event(
                 tracking_context,
                 step_name="final_image",
-                model="gpt-image-1",
+                model=selected_image_model,
                 success=False,
                 metadata={
                     "support_reference_count": len(support_reference_images),
                     "prompt_pack": self._prompt_pack,
-                    "size": "1024x1024",
+                    "size": selected_image_size,
                 },
                 error_message=str(exc),
             )
@@ -350,6 +420,7 @@ class ImageGenerator:
             return self._placeholder_image(
                 f"{NO_STYLE_LOADED_MESSAGE}\n{exc.__class__.__name__}",
                 0,
+                selected_image_size,
             )
 
 
@@ -396,6 +467,14 @@ class ImageGeneratorAPIWrapper:
         active = self.generator.current_prompt_pack
         return packs, active
 
+    def get_generation_options(self) -> dict[str, Any]:
+        return {
+            "available_image_models": self.generator.available_image_models(),
+            "available_image_sizes": self.generator.available_image_sizes(),
+            "default_image_model": self.generator.default_image_model(),
+            "default_image_size": self.generator.default_image_size(),
+        }
+
     def set_prompt_pack(self, prompt_pack: str) -> None:
         self.generator.set_prompt_pack(prompt_pack)
 
@@ -422,6 +501,8 @@ class ImageGeneratorAPIWrapper:
         support_prompts_json: str,
         spec_json: str,
         prompt: str,
+        image_model: str | None = None,
+        image_size: str | None = None,
         tracking_context: TrackingContext | None = None,
     ) -> list[str]:
         if not reference_images:
@@ -444,6 +525,8 @@ class ImageGeneratorAPIWrapper:
             support_reference_prompts=support_reference_prompts,
             specifications=specs,
             prompt=prompt,
+            image_model=image_model,
+            image_size=image_size,
             tracking_context=tracking_context,
         )
         return [final_image]

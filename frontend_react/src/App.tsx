@@ -16,6 +16,13 @@ type GenerateResponse = {
   count: number
 }
 
+type GenerationOptionsResponse = {
+  available_image_models: string[]
+  available_image_sizes: string[]
+  default_image_model: string
+  default_image_size: string
+}
+
 type SpecRow = {
   key: string
   value: string
@@ -35,6 +42,8 @@ type ApiState = {
 }
 
 const DEFAULT_BACKEND_URL = 'http://localhost:8000'
+const DEFAULT_IMAGE_MODEL = 'gpt-image-1'
+const DEFAULT_IMAGE_SIZE = '1024x1024'
 const REQUIRED_SPEC_HINT =
   'Pick a style, choose a base image, add supporting images, then extract the editable spec set.'
 
@@ -90,6 +99,15 @@ function App() {
   const [generatedImage, setGeneratedImage] = useState<string>('')
   const [backendHealthy, setBackendHealthy] = useState<boolean | null>(null)
   const [healthChecked, setHealthChecked] = useState(false)
+  const [generationOptions, setGenerationOptions] = useState<GenerationOptionsResponse>({
+    available_image_models: [DEFAULT_IMAGE_MODEL],
+    available_image_sizes: [DEFAULT_IMAGE_SIZE],
+    default_image_model: DEFAULT_IMAGE_MODEL,
+    default_image_size: DEFAULT_IMAGE_SIZE,
+  })
+  const [selectedImageModel, setSelectedImageModel] = useState(DEFAULT_IMAGE_MODEL)
+  const [selectedImageSize, setSelectedImageSize] = useState(DEFAULT_IMAGE_SIZE)
+  const [generationOptionsState, setGenerationOptionsState] = useState<ApiState>({ loading: false, error: '' })
 
   useEffect(() => {
     return () => {
@@ -116,6 +134,49 @@ function App() {
     }
 
     loadPromptPacks()
+
+    return () => {
+      alive = false
+    }
+  }, [backendUrl])
+
+  useEffect(() => {
+    let alive = true
+
+    async function loadGenerationOptions() {
+      setGenerationOptionsState({ loading: true, error: '' })
+      try {
+        const data = await fetchJson<GenerationOptionsResponse>(`${backendUrl}/generation/options`)
+        if (!alive) return
+
+        const availableModels = data.available_image_models?.length
+          ? data.available_image_models
+          : [data.default_image_model || DEFAULT_IMAGE_MODEL]
+        const availableSizes = data.available_image_sizes?.length
+          ? data.available_image_sizes
+          : [data.default_image_size || DEFAULT_IMAGE_SIZE]
+        const defaultModel = data.default_image_model || availableModels[0] || DEFAULT_IMAGE_MODEL
+        const defaultSize = data.default_image_size || availableSizes[0] || DEFAULT_IMAGE_SIZE
+
+        setGenerationOptions({
+          available_image_models: availableModels,
+          available_image_sizes: availableSizes,
+          default_image_model: defaultModel,
+          default_image_size: defaultSize,
+        })
+        setSelectedImageModel((current) => (availableModels.includes(current) ? current : defaultModel))
+        setSelectedImageSize((current) => (availableSizes.includes(current) ? current : defaultSize))
+        setGenerationOptionsState({ loading: false, error: '' })
+      } catch (error) {
+        if (!alive) return
+        setGenerationOptionsState({
+          loading: false,
+          error: error instanceof Error ? error.message : 'Failed to load generation options',
+        })
+      }
+    }
+
+    loadGenerationOptions()
 
     return () => {
       alive = false
@@ -297,6 +358,8 @@ function App() {
     formData.append('prompt', globalPrompt)
     formData.append('support_prompts_json', supportPromptsJson)
     formData.append('spec_json', JSON.stringify(specs))
+    formData.append('image_model', selectedImageModel)
+    formData.append('image_size', selectedImageSize)
 
     setGenerateState({ loading: true, error: '' })
     try {
@@ -549,10 +612,39 @@ function App() {
                 <h2>5. Generate</h2>
                 <p>The final output combines the base image, support signals, specs, and style pack.</p>
               </div>
+              <label className="select-field">
+                Generation model
+                <select
+                  value={selectedImageModel}
+                  onChange={(event) => setSelectedImageModel(event.target.value)}
+                  disabled={generationOptionsState.loading}
+                >
+                  {generationOptions.available_image_models.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="select-field">
+                Output size
+                <select
+                  value={selectedImageSize}
+                  onChange={(event) => setSelectedImageSize(event.target.value)}
+                  disabled={generationOptionsState.loading}
+                >
+                  {generationOptions.available_image_sizes.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button className="primary-button generate-button" onClick={generateImage} disabled={!canGenerate}>
                 {generateState.loading ? 'Generating...' : 'Create Final Image'}
               </button>
               {generateState.error ? <p className="error-line">{generateState.error}</p> : null}
+              {generationOptionsState.error ? <p className="error-line">{generationOptionsState.error}</p> : null}
             </section>
 
             <section className="card output-card">

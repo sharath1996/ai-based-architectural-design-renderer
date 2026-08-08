@@ -6,6 +6,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models import (
+    GenerationOptionsResponse,
     GenerateResponse,
     PromptPackSelectionRequest,
     PromptPackStatusResponse,
@@ -57,6 +58,12 @@ def set_prompt_pack(payload: PromptPackSelectionRequest) -> PromptPackStatusResp
     )
 
 
+@app.get("/generation/options", response_model=GenerationOptionsResponse)
+def generation_options() -> GenerationOptionsResponse:
+    options = image_generator_api.get_generation_options()
+    return GenerationOptionsResponse(**options)
+
+
 @app.post("/spec/extract", response_model=SpecExtractResponse)
 async def spec_extract(
     files: list[UploadFile] = File(...),
@@ -98,6 +105,8 @@ async def generate_references(
     prompt: str = Form(""),
     support_prompts_json: str = Form("[]"),
     spec_json: str = Form("{}"),
+    image_model: str = Form(""),
+    image_size: str = Form(""),
     client_id: str = Form("default-client"),
     activity_id: str = Form(""),
     activity_title: str = Form("Untitled Activity"),
@@ -116,6 +125,8 @@ async def generate_references(
         support_prompts_json=support_prompts_json,
         spec_json=spec_json,
         prompt=prompt,
+        image_model=image_model,
+        image_size=image_size,
         tracking_context=tracking_context,
     )
     tracking = image_generator_api.get_tracking_summary(tracking_context)

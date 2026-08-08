@@ -54,6 +54,16 @@ if "client_id_input" not in st.session_state:
     st.session_state.client_id_input = "default-client"
 if "activity_title_input" not in st.session_state:
     st.session_state.activity_title_input = "Untitled Activity"
+if "available_image_models" not in st.session_state:
+    st.session_state.available_image_models = ["gpt-image-1"]
+if "available_image_sizes" not in st.session_state:
+    st.session_state.available_image_sizes = ["1024x1024", "1536x1024", "1024x1536"]
+if "selected_image_model" not in st.session_state:
+    st.session_state.selected_image_model = "gpt-image-1"
+if "selected_image_size" not in st.session_state:
+    st.session_state.selected_image_size = "1024x1024"
+if "generation_options_loaded_for_backend" not in st.session_state:
+    st.session_state.generation_options_loaded_for_backend = ""
 
 
 def _uploaded_to_entry(file: Any | None, source: str) -> dict[str, Any] | None:
@@ -162,6 +172,34 @@ def _set_prompt_pack(backend_url: str, prompt_pack: str) -> str | None:
         return f"Failed to set prompt pack: {exc}"
 
 
+def _refresh_generation_options(backend_url: str) -> str | None:
+    try:
+        response = requests.get(f"{backend_url}/generation/options", timeout=30)
+        response.raise_for_status()
+        data: dict[str, Any] = response.json()
+
+        models = [str(m) for m in data.get("available_image_models", []) if str(m).strip()]
+        sizes = [str(s) for s in data.get("available_image_sizes", []) if str(s).strip()]
+        default_model = str(data.get("default_image_model", "gpt-image-1")).strip() or "gpt-image-1"
+        default_size = str(data.get("default_image_size", "1024x1024")).strip() or "1024x1024"
+
+        st.session_state.available_image_models = models or [default_model]
+        st.session_state.available_image_sizes = sizes or [default_size]
+
+        selected_model = st.session_state.selected_image_model
+        selected_size = st.session_state.selected_image_size
+        st.session_state.selected_image_model = (
+            selected_model if selected_model in st.session_state.available_image_models else default_model
+        )
+        st.session_state.selected_image_size = (
+            selected_size if selected_size in st.session_state.available_image_sizes else default_size
+        )
+        st.session_state.generation_options_loaded_for_backend = backend_url
+        return None
+    except requests.RequestException as exc:
+        return f"Failed to load generation options: {exc}"
+
+
 def _spec_to_rows(spec: dict[str, Any]) -> list[dict[str, str]]:
     return [{"key": str(k), "value": str(v)} for k, v in spec.items()]
 
@@ -245,6 +283,10 @@ if st.session_state.prompt_pack_loaded_for_backend != backend_url:
     load_error = _refresh_prompt_packs(backend_url)
     if load_error:
         st.warning(load_error)
+if st.session_state.generation_options_loaded_for_backend != backend_url:
+    options_error = _refresh_generation_options(backend_url)
+    if options_error:
+        st.warning(options_error)
 
 style_col_1, style_col_2 = st.columns([3, 1])
 with style_col_1:
@@ -280,6 +322,40 @@ with style_col_2:
             st.error(load_error)
         else:
             st.success("Prompt packs refreshed.")
+            st.rerun()
+
+settings_col_1, settings_col_2, settings_col_3 = st.columns([2, 2, 1])
+with settings_col_1:
+    st.selectbox(
+        "Generation model",
+        options=st.session_state.available_image_models,
+        index=(
+            st.session_state.available_image_models.index(st.session_state.selected_image_model)
+            if st.session_state.selected_image_model in st.session_state.available_image_models
+            else 0
+        ),
+        key="selected_image_model",
+    )
+with settings_col_2:
+    st.selectbox(
+        "Output size",
+        options=st.session_state.available_image_sizes,
+        index=(
+            st.session_state.available_image_sizes.index(st.session_state.selected_image_size)
+            if st.session_state.selected_image_size in st.session_state.available_image_sizes
+            else 0
+        ),
+        key="selected_image_size",
+    )
+with settings_col_3:
+    st.write("")
+    st.write("")
+    if st.button("Refresh Options"):
+        options_error = _refresh_generation_options(backend_url)
+        if options_error:
+            st.error(options_error)
+        else:
+            st.success("Generation options refreshed.")
             st.rerun()
 
 left_col, right_col = st.columns([1, 1], gap="large")
@@ -454,6 +530,8 @@ if generate_clicked:
             "prompt": prompt,
             "support_prompts_json": json.dumps(support_prompts),
             "spec_json": json.dumps(st.session_state.extracted_spec),
+            "image_model": st.session_state.selected_image_model,
+            "image_size": st.session_state.selected_image_size,
         }
         form_data.update(_build_tracking_form_data())
 

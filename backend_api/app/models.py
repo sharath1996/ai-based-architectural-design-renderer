@@ -44,3 +44,10 @@ class PromptPackSelectionRequest(BaseModel):
 class PromptPackStatusResponse(BaseModel):
     active_prompt_pack: str
     available_prompt_packs: list[str] = Field(default_factory=list)
+
+
+class GenerationOptionsResponse(BaseModel):
+    available_image_models: list[str] = Field(default_factory=list)
+    available_image_sizes: list[str] = Field(default_factory=list)
+    default_image_model: str
+    default_image_size: str
