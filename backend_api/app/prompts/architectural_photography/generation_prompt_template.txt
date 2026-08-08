@@ -1,0 +1,14 @@
+{base_render_system_prompt}
+
+{final_presentation_profile}
+
+Scene instructions:
+- Keep composition anchored to the provided reference render.
+- Keep architecture and furniture placement stable unless explicitly requested.
+- Improve realism via materials, lighting, and surface detail only.
+
+Specifications (key-value):
+{spec_text}
+
+Additional user intent:
+{user_prompt}

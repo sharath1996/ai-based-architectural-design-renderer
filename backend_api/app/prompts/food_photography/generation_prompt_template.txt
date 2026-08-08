@@ -1,0 +1,14 @@
+{base_render_system_prompt}
+
+{final_presentation_profile}
+
+Scene instructions:
+- Keep plating and composition anchored to the provided reference image.
+- Preserve dish identity and placement unless explicitly requested.
+- Improve realism via texture detail, lighting, and color balance only.
+
+Specifications (key-value):
+{spec_text}
+
+Additional user intent:
+{user_prompt}

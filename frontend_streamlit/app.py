@@ -37,6 +37,12 @@ if "generated_images" not in st.session_state:
     st.session_state.generated_images = []
 if "saved_reference_images" not in st.session_state:
     st.session_state.saved_reference_images = []
+if "available_prompt_packs" not in st.session_state:
+    st.session_state.available_prompt_packs = []
+if "active_prompt_pack" not in st.session_state:
+    st.session_state.active_prompt_pack = ""
+if "prompt_pack_loaded_for_backend" not in st.session_state:
+    st.session_state.prompt_pack_loaded_for_backend = ""
 
 
 def _uploaded_to_reference_entries(uploaded: list[Any] | None) -> list[dict[str, Any]]:
@@ -62,6 +68,67 @@ def _all_reference_images(uploaded: list[Any] | None) -> list[dict[str, Any]]:
     return _uploaded_to_reference_entries(uploaded) + st.session_state.saved_reference_images
 
 
+def _normalize_spec_payload(spec_payload: Any) -> dict[str, str]:
+    if not isinstance(spec_payload, dict):
+        return {}
+
+    if "error" in spec_payload and str(spec_payload.get("error", "")).strip():
+        return {"error": str(spec_payload["error"]).strip()}
+
+    if "list_spec" in spec_payload and isinstance(spec_payload["list_spec"], list):
+        normalized: dict[str, str] = {}
+        for item in spec_payload["list_spec"]:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", "")).strip()
+            value = str(item.get("value", "")).strip()
+            if key:
+                normalized[key] = value
+        return normalized
+
+    return {str(k): str(v) for k, v in spec_payload.items()}
+
+
+def _spec_error_message(spec: dict[str, Any]) -> str | None:
+    error = str(spec.get("error", "")).strip()
+    return error or None
+
+
+def _refresh_prompt_packs(backend_url: str) -> str | None:
+    try:
+        response = requests.get(f"{backend_url}/prompt-packs", timeout=30)
+        response.raise_for_status()
+        data: dict[str, Any] = response.json()
+        packs = data.get("available_prompt_packs", [])
+        active = str(data.get("active_prompt_pack", ""))
+        st.session_state.available_prompt_packs = [str(p) for p in packs]
+        st.session_state.active_prompt_pack = active
+        st.session_state.prompt_pack_loaded_for_backend = backend_url
+        return None
+    except requests.RequestException as exc:
+        st.session_state.available_prompt_packs = []
+        st.session_state.active_prompt_pack = ""
+        return f"Failed to load prompt packs: {exc}"
+
+
+def _set_prompt_pack(backend_url: str, prompt_pack: str) -> str | None:
+    try:
+        response = requests.post(
+            f"{backend_url}/prompt-packs/select",
+            json={"prompt_pack": prompt_pack},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data: dict[str, Any] = response.json()
+        st.session_state.available_prompt_packs = [
+            str(p) for p in data.get("available_prompt_packs", [])
+        ]
+        st.session_state.active_prompt_pack = str(data.get("active_prompt_pack", ""))
+        return None
+    except requests.RequestException as exc:
+        return f"Failed to set prompt pack: {exc}"
+
+
 def _spec_to_rows(spec: dict[str, Any]) -> list[dict[str, str]]:
     return [{"key": str(k), "value": str(v)} for k, v in spec.items()]
 
@@ -82,6 +149,47 @@ st.title("Home Builder Renderer")
 st.caption("Minimal single-page flow with temporary session memory only")
 
 backend_url = st.text_input("Backend URL", value=BACKEND_DEFAULT).rstrip("/")
+
+if st.session_state.prompt_pack_loaded_for_backend != backend_url:
+    load_error = _refresh_prompt_packs(backend_url)
+    if load_error:
+        st.warning(load_error)
+
+style_col_1, style_col_2 = st.columns([3, 1])
+with style_col_1:
+    st.subheader("Photography Style")
+    if st.session_state.available_prompt_packs:
+        active = st.session_state.active_prompt_pack
+        options = st.session_state.available_prompt_packs
+        selected_index = options.index(active) if active in options else 0
+        selected_pack = st.selectbox(
+            "Select style",
+            options=options,
+            index=selected_index,
+            key="selected_prompt_pack",
+        )
+
+        if selected_pack != active:
+            if st.button("Apply Style", type="secondary"):
+                set_error = _set_prompt_pack(backend_url, selected_pack)
+                if set_error:
+                    st.error(set_error)
+                else:
+                    st.success(f"Active style set to: {st.session_state.active_prompt_pack}")
+                    st.rerun()
+    else:
+        st.info("No prompt packs available.")
+
+with style_col_2:
+    st.write("")
+    st.write("")
+    if st.button("Refresh Styles"):
+        load_error = _refresh_prompt_packs(backend_url)
+        if load_error:
+            st.error(load_error)
+        else:
+            st.success("Prompt packs refreshed.")
+            st.rerun()
 
 left_col, right_col = st.columns([1, 1], gap="large")
 
@@ -127,9 +235,18 @@ with left_col:
                     )
                 response.raise_for_status()
                 data = response.json()
-                st.session_state.extracted_spec = data.get("spec", {})
-                st.session_state.spec_rows = _spec_to_rows(st.session_state.extracted_spec)
-                st.success("Specifications extracted.")
+                normalized_spec = _normalize_spec_payload(data.get("spec", {}))
+                error_message = _spec_error_message(normalized_spec)
+
+                st.session_state.extracted_spec = normalized_spec
+                st.session_state.spec_rows = _spec_to_rows(
+                    {k: v for k, v in normalized_spec.items() if k != "error"}
+                )
+
+                if error_message:
+                    st.error(error_message)
+                else:
+                    st.success("Specifications extracted.")
             except requests.RequestException as exc:
                 st.error(f"Spec extraction failed: {exc}")
 
@@ -183,6 +300,9 @@ with right_col:
             st.info("Extract specs first.")
 
 st.subheader("3. Prompt")
+active_style = st.session_state.active_prompt_pack or "not selected"
+st.caption(f"Active style: {active_style}")
+
 prompt = st.text_area(
     "Prompt",
     placeholder="Describe the final atmosphere, materials, and style refinements...",
@@ -198,9 +318,12 @@ if generate_clicked:
         st.session_state.extracted_spec = latest_spec
 
     reference_images = _all_reference_images(uploaded_files)
+    spec_error = _spec_error_message(st.session_state.extracted_spec)
 
     if not reference_images:
         st.warning("Upload reference images before generating outputs.")
+    elif spec_error:
+        st.warning(spec_error)
     elif not st.session_state.extracted_spec:
         st.warning("Extract specifications first.")
     else:

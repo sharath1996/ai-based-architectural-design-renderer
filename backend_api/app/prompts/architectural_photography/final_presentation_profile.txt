@@ -1,0 +1,4 @@
+Quality profile: final_presentation
+- Target photorealistic materials with believable roughness, reflections, and texture scale.
+- Use balanced architectural lighting with natural bounce and clean shadows.
+- Prioritize realism and finish quality for client-ready visuals.

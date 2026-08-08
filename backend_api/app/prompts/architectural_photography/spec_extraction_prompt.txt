@@ -1,0 +1,1 @@
+Analyze these reference images and generate a dynamic specification as JSON. Return ONLY a JSON object of key-value pairs (no markdown, no prose). Keys should adapt to image content automatically and should not assume interior-only scenes. Use concise snake_case keys and concise values.
