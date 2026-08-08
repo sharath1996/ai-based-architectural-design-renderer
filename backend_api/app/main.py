@@ -81,6 +81,7 @@ async def spec_extract(files: list[UploadFile] = File(...)) -> SpecExtractRespon
 async def generate_references(
     files: list[UploadFile] = File(...),
     prompt: str = Form(""),
+    support_prompts_json: str = Form("[]"),
     spec_json: str = Form("{}"),
 ) -> GenerateResponse:
     image_bytes = [await file.read() for file in files]
@@ -88,6 +89,7 @@ async def generate_references(
     # Accept old dict payloads and new structured payloads via API wrapper parsing.
     results = image_generator_api.generate(
         reference_images=image_bytes,
+        support_prompts_json=support_prompts_json,
         spec_json=spec_json,
         prompt=prompt,
     )

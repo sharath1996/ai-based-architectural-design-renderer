@@ -2,6 +2,12 @@
 
 {final_presentation_profile}
 
+Base anchor instruction:
+{base_anchor_instruction}
+
+Support references and intended influence:
+{support_reference_context}
+
 Scene instructions:
 - Keep product composition anchored to the provided reference image.
 - Preserve item geometry and placement unless explicitly requested.

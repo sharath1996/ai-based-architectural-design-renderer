@@ -2,6 +2,12 @@
 
 {final_presentation_profile}
 
+Base anchor instruction:
+{base_anchor_instruction}
+
+Support references and intended influence:
+{support_reference_context}
+
 Scene instructions:
 - Keep composition anchored to the provided reference render.
 - Keep architecture and furniture placement stable unless explicitly requested.

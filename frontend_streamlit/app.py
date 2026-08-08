@@ -35,8 +35,6 @@ if "spec_rows" not in st.session_state:
     st.session_state.spec_rows = []
 if "generated_images" not in st.session_state:
     st.session_state.generated_images = []
-if "saved_reference_images" not in st.session_state:
-    st.session_state.saved_reference_images = []
 if "available_prompt_packs" not in st.session_state:
     st.session_state.available_prompt_packs = []
 if "active_prompt_pack" not in st.session_state:
@@ -45,27 +43,31 @@ if "prompt_pack_loaded_for_backend" not in st.session_state:
     st.session_state.prompt_pack_loaded_for_backend = ""
 
 
-def _uploaded_to_reference_entries(uploaded: list[Any] | None) -> list[dict[str, Any]]:
+def _uploaded_to_entry(file: Any | None, source: str) -> dict[str, Any] | None:
+    if not file:
+        return None
+
+    content = file.getvalue()
+    digest = hashlib.md5(content).hexdigest()
+    return {
+        "name": file.name,
+        "bytes": content,
+        "mime": file.type or "image/png",
+        "id": f"{source}-{digest}",
+        "source": source,
+    }
+
+
+def _uploaded_to_entries(files: list[Any] | None, source: str) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    if not uploaded:
+    if not files:
         return entries
-    for file in uploaded:
-        content = file.getvalue()
-        digest = hashlib.md5(content).hexdigest()
-        entries.append(
-            {
-                "name": file.name,
-                "bytes": content,
-                "mime": file.type or "image/png",
-                "id": f"upload-{digest}",
-                "source": "upload",
-            }
-        )
+
+    for file in files:
+        entry = _uploaded_to_entry(file, source)
+        if entry:
+            entries.append(entry)
     return entries
-
-
-def _all_reference_images(uploaded: list[Any] | None) -> list[dict[str, Any]]:
-    return _uploaded_to_reference_entries(uploaded) + st.session_state.saved_reference_images
 
 
 def _normalize_spec_payload(spec_payload: Any) -> dict[str, str]:
@@ -145,7 +147,26 @@ def _rows_to_spec(rows: pd.DataFrame) -> dict[str, str]:
             out[key] = value
     return out
 
-st.title("Home Builder Renderer")
+
+def _build_generation_files_payload(
+    base_entry: dict[str, Any],
+    support_entries: list[dict[str, Any]],
+) -> list[tuple[str, tuple[str, bytes, str]]]:
+    ordered = [base_entry] + support_entries
+    return [
+        ("files", (item["name"], item["bytes"], item["mime"]))
+        for item in ordered
+    ]
+
+
+def _support_prompts_for_entries(support_entries: list[dict[str, Any]]) -> list[str]:
+    prompts: list[str] = []
+    for item in support_entries:
+        prompt_key = f"support_prompt_{item['id']}"
+        prompts.append(str(st.session_state.get(prompt_key, "")).strip())
+    return prompts
+
+st.title("AI Photo Studio")
 st.caption("Minimal single-page flow with temporary session memory only")
 
 backend_url = st.text_input("Backend URL", value=BACKEND_DEFAULT).rstrip("/")
@@ -194,38 +215,46 @@ with style_col_2:
 left_col, right_col = st.columns([1, 1], gap="large")
 
 with left_col:
-    st.subheader("1. Upload Reference Images")
-    uploaded_files = st.file_uploader(
-        "Upload one or more images",
+    st.subheader("1. Base Anchor Image")
+    base_uploaded_file = st.file_uploader(
+        "Upload one base anchor image",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=False,
+        key="base_uploader",
+    )
+    base_entry = _uploaded_to_entry(base_uploaded_file, source="base")
+
+    if base_entry:
+        st.image(base_entry["bytes"], use_container_width=True)
+        st.caption(f"Base anchor: {base_entry['name']}")
+
+    st.subheader("2. Support Reference Images")
+    support_uploaded_files = st.file_uploader(
+        "Upload support images",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
-        label_visibility="collapsed",
+        key="support_uploader",
     )
+    support_entries = _uploaded_to_entries(support_uploaded_files, source="support")
 
-    extract_clicked = st.button("Extract Architectural Specs", type="primary")
+    if support_entries:
+        st.caption("Each support reference needs an intent prompt.")
+        for idx, support_item in enumerate(support_entries):
+            st.image(support_item["bytes"], use_container_width=True)
+            st.caption(f"Support {idx + 1}: {support_item['name']}")
+            st.text_input(
+                f"Support prompt {idx + 1}",
+                key=f"support_prompt_{support_item['id']}",
+                placeholder="What should this support image influence?",
+            )
 
-    reference_images = _all_reference_images(uploaded_files)
-
-    if reference_images:
-        st.markdown("<div class='small-muted'>Reference image pool (uploaded + saved)</div>", unsafe_allow_html=True)
-        thumbs = st.columns(min(4, len(reference_images)))
-        for idx, image_item in enumerate(reference_images):
-            with thumbs[idx % len(thumbs)]:
-                st.image(image_item["bytes"], use_container_width=True)
-                st.caption(f"{image_item['source']}: {image_item['name']}")
-
-    if st.session_state.saved_reference_images and st.button("Clear Saved Reference Images"):
-        st.session_state.saved_reference_images = []
-        st.rerun()
+    extract_clicked = st.button("Extract Specs", type="primary")
 
     if extract_clicked:
-        if not reference_images:
-            st.warning("Upload at least one reference image first.")
+        if not base_entry:
+            st.warning("Upload a base anchor image first.")
         else:
-            files_payload = [
-                ("files", (item["name"], item["bytes"], item["mime"]))
-                for item in reference_images
-            ]
+            files_payload = _build_generation_files_payload(base_entry, support_entries)
             try:
                 with st.spinner("Extracting specs..."):
                     response = requests.post(
@@ -251,7 +280,7 @@ with left_col:
                 st.error(f"Spec extraction failed: {exc}")
 
 with right_col:
-    st.subheader("2. Extracted Architectural Specifications")
+    st.subheader("3. Extracted Specifications")
 
     controls_col_1, controls_col_2, controls_col_3 = st.columns(3)
     with controls_col_1:
@@ -299,7 +328,7 @@ with right_col:
         else:
             st.info("Extract specs first.")
 
-st.subheader("3. Prompt")
+st.subheader("4. Prompt")
 active_style = st.session_state.active_prompt_pack or "not selected"
 st.caption(f"Active style: {active_style}")
 
@@ -310,34 +339,34 @@ prompt = st.text_area(
     label_visibility="collapsed",
 )
 
-generate_clicked = st.button("Generate Reference Images", type="primary")
+generate_clicked = st.button("Generate Final Image", type="primary")
 
 if generate_clicked:
     latest_spec = _rows_to_spec(spec_editor_df)
     if latest_spec:
         st.session_state.extracted_spec = latest_spec
 
-    reference_images = _all_reference_images(uploaded_files)
+    base_entry = _uploaded_to_entry(base_uploaded_file, source="base")
+    support_entries = _uploaded_to_entries(support_uploaded_files, source="support")
     spec_error = _spec_error_message(st.session_state.extracted_spec)
 
-    if not reference_images:
-        st.warning("Upload reference images before generating outputs.")
+    if not base_entry:
+        st.warning("Upload a base anchor image before generating output.")
     elif spec_error:
         st.warning(spec_error)
     elif not st.session_state.extracted_spec:
         st.warning("Extract specifications first.")
     else:
-        files_payload = [
-            ("files", (item["name"], item["bytes"], item["mime"]))
-            for item in reference_images
-        ]
+        files_payload = _build_generation_files_payload(base_entry, support_entries)
+        support_prompts = _support_prompts_for_entries(support_entries)
         form_data = {
             "prompt": prompt,
+            "support_prompts_json": json.dumps(support_prompts),
             "spec_json": json.dumps(st.session_state.extracted_spec),
         }
 
         try:
-            with st.spinner("Generating one output per reference image..."):
+            with st.spinner("Generating final output image..."):
                 response = requests.post(
                     f"{backend_url}/generate/references",
                     files=files_payload,
@@ -347,49 +376,28 @@ if generate_clicked:
             response.raise_for_status()
             data: dict[str, Any] = response.json()
             st.session_state.generated_images = data.get("images_base64", [])
-            st.success(f"Generated {len(st.session_state.generated_images)} image(s).")
+            if st.session_state.generated_images:
+                st.success("Generated final image.")
+            else:
+                st.warning("No final image returned.")
         except requests.RequestException as exc:
             st.error(f"Image generation failed: {exc}")
 
 st.markdown("<div class='result-box'></div>", unsafe_allow_html=True)
-st.subheader("4. Generated Reference Images")
+st.subheader("5. Generated Final Image")
 
 if st.session_state.generated_images:
-    gallery_cols = st.columns(2)
-    for idx, image_b64 in enumerate(st.session_state.generated_images):
-        image_bytes = base64.b64decode(image_b64)
-        image_name = f"generated_reference_{idx + 1}.png"
-        with gallery_cols[idx % 2]:
-            st.image(image_bytes, use_container_width=True)
-
-            action_col_1, action_col_2 = st.columns(2)
-            with action_col_1:
-                st.download_button(
-                    label="Download Image",
-                    data=image_bytes,
-                    file_name=image_name,
-                    mime="image/png",
-                    key=f"download_image_{idx}",
-                    use_container_width=True,
-                )
-            with action_col_2:
-                if st.button("Save as Reference Image", key=f"save_as_reference_{idx}", use_container_width=True):
-                    digest = hashlib.md5(image_bytes).hexdigest()
-                    existing_ids = {item["id"] for item in st.session_state.saved_reference_images}
-                    saved_id = f"saved-{digest}"
-                    if saved_id in existing_ids:
-                        st.info("This generated image is already in the reference pool.")
-                    else:
-                        st.session_state.saved_reference_images.append(
-                            {
-                                "name": image_name,
-                                "bytes": image_bytes,
-                                "mime": "image/png",
-                                "id": saved_id,
-                                "source": "saved",
-                            }
-                        )
-                        st.success("Saved to reference image pool.")
-                        st.rerun()
+    image_b64 = st.session_state.generated_images[0]
+    image_bytes = base64.b64decode(image_b64)
+    image_name = "generated_final_output.png"
+    st.image(image_bytes, use_container_width=True)
+    st.download_button(
+        label="Download Final Image",
+        data=image_bytes,
+        file_name=image_name,
+        mime="image/png",
+        key="download_final_image",
+        use_container_width=True,
+    )
 else:
-    st.write("Generated images will appear here.")
+    st.write("Final generated image will appear here.")

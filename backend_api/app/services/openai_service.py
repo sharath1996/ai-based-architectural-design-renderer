@@ -83,16 +83,27 @@ class ImageGenerator:
             f"{NO_STYLE_LOADED_MESSAGE} Missing prompt file: {filename} in pack '{self._prompt_pack}'."
         )
 
-    def _build_generation_prompt(self, specifications: Specifications, user_prompt: str) -> str:
+    def _build_generation_prompt(
+        self,
+        specifications: Specifications,
+        user_prompt: str,
+        support_reference_context: str,
+    ) -> str:
         base_render_system_prompt = self._read_prompt_file("base_render_system_prompt.txt")
         final_presentation_profile = self._read_prompt_file("final_presentation_profile.txt")
         generation_prompt_template = self._read_prompt_file("generation_prompt_template.txt")
         spec_text = json.dumps(specifications.to_dict(), indent=2)
+        base_anchor_instruction = (
+            "Use the base reference image as the strict anchor for composition, framing,"
+            " geometry, and main subject structure unless explicitly overridden by user intent."
+        )
         return generation_prompt_template.format(
             base_render_system_prompt=base_render_system_prompt,
             final_presentation_profile=final_presentation_profile,
             spec_text=spec_text,
             user_prompt=user_prompt,
+            base_anchor_instruction=base_anchor_instruction,
+            support_reference_context=support_reference_context,
         )
 
     def _client(self) -> OpenAI | None:
@@ -112,7 +123,66 @@ class ImageGenerator:
         image.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    def extract_specs(self, image_bytes_list: list[bytes]) -> Specifications:
+    def _summarize_support_references(
+        self,
+        client: OpenAI,
+        support_reference_images: list[bytes],
+        support_reference_prompts: list[str],
+    ) -> str:
+        if not support_reference_images:
+            return "No support references provided."
+
+        summaries: list[str] = []
+        model_name = os.getenv("OPENAI_SUPPORT_REFERENCE_MODEL", "gpt-4.1-mini")
+
+        for idx, support_image in enumerate(support_reference_images):
+            intent_prompt = ""
+            if idx < len(support_reference_prompts):
+                intent_prompt = support_reference_prompts[idx].strip()
+            if not intent_prompt:
+                intent_prompt = "No specific support intent provided."
+
+            content: list[dict[str, Any]] = [
+                {
+                    "type": "text",
+                    "text": (
+                        "You are extracting style influence notes from a support reference image. "
+                        "Return one concise sentence describing only details relevant to this intent: "
+                        f"{intent_prompt}"
+                    ),
+                }
+            ]
+            b64 = base64.b64encode(support_image).decode("utf-8")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}"},
+                }
+            )
+
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": content}],
+                    temperature=0.2,
+                )
+                note = str(response.choices[0].message.content or "").strip()
+                if not note:
+                    note = "No extractable support details found."
+            except Exception:
+                note = "Support analysis unavailable for this reference."
+
+            summaries.append(
+                f"- Support reference {idx + 1}: intent={intent_prompt} | extracted_influence={note}"
+            )
+
+        return "\n".join(summaries)
+
+    def extract_specs(
+        self,
+        base_reference_image: bytes,
+        support_reference_images: list[bytes] | None = None,
+    ) -> Specifications:
         client = self._client()
         if not client:
             raise RuntimeError(NO_STYLE_LOADED_MESSAGE)
@@ -123,7 +193,9 @@ class ImageGenerator:
             raise RuntimeError(NO_STYLE_LOADED_MESSAGE) from exc
 
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for image_bytes in image_bytes_list:
+
+        all_images = [base_reference_image] + (support_reference_images or [])
+        for image_bytes in all_images:
             b64 = base64.b64encode(image_bytes).decode("utf-8")
             content.append(
                 {
@@ -152,54 +224,56 @@ class ImageGenerator:
 
     def generate(
         self,
-        reference_images: list[bytes],
+        base_reference_image: bytes,
+        support_reference_images: list[bytes],
+        support_reference_prompts: list[str],
         specifications: Specifications,
         prompt: str,
-    ) -> list[str]:
+    ) -> str:
         client = self._client()
-        try:
-            combined_prompt = self._build_generation_prompt(specifications, prompt)
-        except FileNotFoundError:
-            return [
-                self._placeholder_image(NO_STYLE_LOADED_MESSAGE, i)
-                for i, _ in enumerate(reference_images)
-            ]
-
         if not client:
-            return [
-                self._placeholder_image(NO_STYLE_LOADED_MESSAGE, i)
-                for i, _ in enumerate(reference_images)
-            ]
+            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)
 
-        outputs: list[str] = []
-        for i, ref_image in enumerate(reference_images):
-            try:
-                image_buffer = io.BytesIO(ref_image)
-                image_buffer.name = "reference.png"
+        support_reference_context = self._summarize_support_references(
+            client=client,
+            support_reference_images=support_reference_images,
+            support_reference_prompts=support_reference_prompts,
+        )
 
-                edit_result = client.images.edit(
-                    model="gpt-image-1",
-                    image=image_buffer,
-                    prompt=combined_prompt,
-                    size="1024x1024",
-                )
+        try:
+            combined_prompt = self._build_generation_prompt(
+                specifications,
+                prompt,
+                support_reference_context,
+            )
+        except FileNotFoundError:
+            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)
 
-                generated_b64 = None
-                if getattr(edit_result, "data", None):
-                    first = edit_result.data[0]
-                    generated_b64 = getattr(first, "b64_json", None)
+        try:
+            image_buffer = io.BytesIO(base_reference_image)
+            image_buffer.name = "base_reference.png"
 
-                if generated_b64:
-                    outputs.append(generated_b64)
-                else:
-                    outputs.append(self._placeholder_image(NO_STYLE_LOADED_MESSAGE, i))
-            except Exception as exc:
-                logger.exception("Image generation failed for reference index %s", i)
-                outputs.append(
-                    self._placeholder_image(f"{NO_STYLE_LOADED_MESSAGE}\n{exc.__class__.__name__}", i)
-                )
+            edit_result = client.images.edit(
+                model="gpt-image-1",
+                image=image_buffer,
+                prompt=combined_prompt,
+                size="1024x1024",
+            )
 
-        return outputs
+            generated_b64 = None
+            if getattr(edit_result, "data", None):
+                first = edit_result.data[0]
+                generated_b64 = getattr(first, "b64_json", None)
+
+            if generated_b64:
+                return generated_b64
+            return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)
+        except Exception as exc:
+            logger.exception("Image generation failed for final output")
+            return self._placeholder_image(
+                f"{NO_STYLE_LOADED_MESSAGE}\n{exc.__class__.__name__}",
+                0,
+            )
 
 
 class ImageGeneratorAPIWrapper:
@@ -207,7 +281,11 @@ class ImageGeneratorAPIWrapper:
         self.generator = generator or ImageGenerator()
 
     def extract_specs(self, image_bytes_list: list[bytes]) -> Specifications:
-        return self.generator.extract_specs(image_bytes_list)
+        if not image_bytes_list:
+            raise RuntimeError(NO_STYLE_LOADED_MESSAGE)
+        base_reference_image = image_bytes_list[0]
+        support_reference_images = image_bytes_list[1:]
+        return self.generator.extract_specs(base_reference_image, support_reference_images)
 
     def get_prompt_packs(self) -> tuple[list[str], str]:
         packs = self.generator.list_prompt_packs()
@@ -234,6 +312,32 @@ class ImageGeneratorAPIWrapper:
 
         return Specifications()
 
-    def generate(self, reference_images: list[bytes], spec_json: str, prompt: str) -> list[str]:
+    def generate(
+        self,
+        reference_images: list[bytes],
+        support_prompts_json: str,
+        spec_json: str,
+        prompt: str,
+    ) -> list[str]:
+        if not reference_images:
+            return [self.generator._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)]
+
+        try:
+            parsed_support_prompts = json.loads(support_prompts_json)
+        except json.JSONDecodeError:
+            parsed_support_prompts = []
+        support_reference_prompts = [
+            str(item) for item in parsed_support_prompts
+        ] if isinstance(parsed_support_prompts, list) else []
+
         specs = self.parse_spec_json(spec_json)
-        return self.generator.generate(reference_images, specs, prompt)
+        base_reference_image = reference_images[0]
+        support_reference_images = reference_images[1:]
+        final_image = self.generator.generate(
+            base_reference_image=base_reference_image,
+            support_reference_images=support_reference_images,
+            support_reference_prompts=support_reference_prompts,
+            specifications=specs,
+            prompt=prompt,
+        )
+        return [final_image]
