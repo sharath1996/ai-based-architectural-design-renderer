@@ -11,6 +11,7 @@ from typing import Any
 from openai import OpenAI
 from PIL import Image, ImageDraw
 
+from .cost_tracker import CostTracker, TrackingContext
 from .spec_defaults import Specifications
 
 
@@ -28,12 +29,13 @@ REQUIRED_PROMPT_FILES = (
 class ImageGenerator:
 
 
-    def __init__(self, prompt_pack: str | None = None) -> None:
+    def __init__(self, prompt_pack: str | None = None, cost_tracker: CostTracker | None = None) -> None:
 
         self._prompts_dir = Path(__file__).resolve().parents[1] / "prompts"
         self._prompt_pack = prompt_pack or os.getenv("PROMPT_PACK", "architectural_photography")
         self._prompt_pack_dir = self._prompts_dir / self._prompt_pack
         self._prompt_cache: dict[str, str] = {}
+        self.cost_tracker = cost_tracker or CostTracker()
 
     @property
     def current_prompt_pack(self) -> str:
@@ -128,6 +130,7 @@ class ImageGenerator:
         client: OpenAI,
         support_reference_images: list[bytes],
         support_reference_prompts: list[str],
+        tracking_context: TrackingContext | None = None,
     ) -> str:
         if not support_reference_images:
             return "No support references provided."
@@ -166,10 +169,32 @@ class ImageGenerator:
                     messages=[{"role": "user", "content": content}],
                     temperature=0.2,
                 )
+                self.cost_tracker.log_event(
+                    tracking_context,
+                    step_name="support_summary",
+                    model=model_name,
+                    usage=getattr(response, "usage", None),
+                    success=True,
+                    metadata={
+                        "support_index": idx + 1,
+                        "prompt_pack": self._prompt_pack,
+                    },
+                )
                 note = str(response.choices[0].message.content or "").strip()
                 if not note:
                     note = "No extractable support details found."
-            except Exception:
+            except Exception as exc:
+                self.cost_tracker.log_event(
+                    tracking_context,
+                    step_name="support_summary",
+                    model=model_name,
+                    success=False,
+                    metadata={
+                        "support_index": idx + 1,
+                        "prompt_pack": self._prompt_pack,
+                    },
+                    error_message=str(exc),
+                )
                 note = "Support analysis unavailable for this reference."
 
             summaries.append(
@@ -182,6 +207,7 @@ class ImageGenerator:
         self,
         base_reference_image: bytes,
         support_reference_images: list[bytes] | None = None,
+        tracking_context: TrackingContext | None = None,
     ) -> Specifications:
         client = self._client()
         if not client:
@@ -211,6 +237,17 @@ class ImageGenerator:
                 response_format=Specifications,
                 temperature=0.2,
             )
+            self.cost_tracker.log_event(
+                tracking_context,
+                step_name="spec_extract",
+                model=os.getenv("OPENAI_SPEC_EXTRACTION_MODEL", "gpt-4o-2024-08-06"),
+                usage=getattr(completion, "usage", None),
+                success=True,
+                metadata={
+                    "reference_image_count": len(all_images),
+                    "prompt_pack": self._prompt_pack,
+                },
+            )
             message = completion.choices[0].message
             if getattr(message, "refusal", None):
                 raise RuntimeError(NO_STYLE_LOADED_MESSAGE)
@@ -218,6 +255,17 @@ class ImageGenerator:
             if isinstance(parsed, Specifications):
                 return parsed
         except Exception as exc:
+            self.cost_tracker.log_event(
+                tracking_context,
+                step_name="spec_extract",
+                model=os.getenv("OPENAI_SPEC_EXTRACTION_MODEL", "gpt-4o-2024-08-06"),
+                success=False,
+                metadata={
+                    "reference_image_count": len(all_images),
+                    "prompt_pack": self._prompt_pack,
+                },
+                error_message=str(exc),
+            )
             raise RuntimeError(NO_STYLE_LOADED_MESSAGE) from exc
 
         raise RuntimeError(NO_STYLE_LOADED_MESSAGE)
@@ -229,6 +277,7 @@ class ImageGenerator:
         support_reference_prompts: list[str],
         specifications: Specifications,
         prompt: str,
+        tracking_context: TrackingContext | None = None,
     ) -> str:
         client = self._client()
         if not client:
@@ -238,6 +287,7 @@ class ImageGenerator:
             client=client,
             support_reference_images=support_reference_images,
             support_reference_prompts=support_reference_prompts,
+            tracking_context=tracking_context,
         )
 
         try:
@@ -265,10 +315,37 @@ class ImageGenerator:
                 first = edit_result.data[0]
                 generated_b64 = getattr(first, "b64_json", None)
 
+            self.cost_tracker.log_event(
+                tracking_context,
+                step_name="final_image",
+                model="gpt-image-1",
+                usage=getattr(edit_result, "usage", None),
+                success=bool(generated_b64),
+                image_count=1 if generated_b64 else 0,
+                metadata={
+                    "support_reference_count": len(support_reference_images),
+                    "prompt_pack": self._prompt_pack,
+                    "size": "1024x1024",
+                },
+                error_message=None if generated_b64 else "No image data returned from OpenAI.",
+            )
+
             if generated_b64:
                 return generated_b64
             return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)
         except Exception as exc:
+            self.cost_tracker.log_event(
+                tracking_context,
+                step_name="final_image",
+                model="gpt-image-1",
+                success=False,
+                metadata={
+                    "support_reference_count": len(support_reference_images),
+                    "prompt_pack": self._prompt_pack,
+                    "size": "1024x1024",
+                },
+                error_message=str(exc),
+            )
             logger.exception("Image generation failed for final output")
             return self._placeholder_image(
                 f"{NO_STYLE_LOADED_MESSAGE}\n{exc.__class__.__name__}",
@@ -280,12 +357,39 @@ class ImageGeneratorAPIWrapper:
     def __init__(self, generator: ImageGenerator | None = None) -> None:
         self.generator = generator or ImageGenerator()
 
-    def extract_specs(self, image_bytes_list: list[bytes]) -> Specifications:
+    def create_tracking_context(
+        self,
+        client_id: str,
+        activity_id: str,
+        activity_title: str,
+        endpoint: str,
+    ) -> TrackingContext:
+        context = self.generator.cost_tracker.build_context(
+            client_id=client_id,
+            activity_id=activity_id,
+            activity_title=activity_title,
+            endpoint=endpoint,
+        )
+        self.generator.cost_tracker.ensure_activity(context)
+        return context
+
+    def get_tracking_summary(self, tracking_context: TrackingContext | None) -> dict[str, Any] | None:
+        return self.generator.cost_tracker.get_activity_summary(tracking_context)
+
+    def extract_specs(
+        self,
+        image_bytes_list: list[bytes],
+        tracking_context: TrackingContext | None = None,
+    ) -> Specifications:
         if not image_bytes_list:
             raise RuntimeError(NO_STYLE_LOADED_MESSAGE)
         base_reference_image = image_bytes_list[0]
         support_reference_images = image_bytes_list[1:]
-        return self.generator.extract_specs(base_reference_image, support_reference_images)
+        return self.generator.extract_specs(
+            base_reference_image,
+            support_reference_images,
+            tracking_context=tracking_context,
+        )
 
     def get_prompt_packs(self) -> tuple[list[str], str]:
         packs = self.generator.list_prompt_packs()
@@ -318,6 +422,7 @@ class ImageGeneratorAPIWrapper:
         support_prompts_json: str,
         spec_json: str,
         prompt: str,
+        tracking_context: TrackingContext | None = None,
     ) -> list[str]:
         if not reference_images:
             return [self.generator._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0)]
@@ -339,5 +444,6 @@ class ImageGeneratorAPIWrapper:
             support_reference_prompts=support_reference_prompts,
             specifications=specs,
             prompt=prompt,
+            tracking_context=tracking_context,
         )
         return [final_image]

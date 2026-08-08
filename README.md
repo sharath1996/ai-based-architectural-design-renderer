@@ -22,9 +22,16 @@ Edit `backend_api/.env` and set:
 
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_PRICE_GPT_4_1_MINI_INPUT_PER_1M=
+OPENAI_PRICE_GPT_4_1_MINI_OUTPUT_PER_1M=
+OPENAI_PRICE_GPT_4O_2024_08_06_INPUT_PER_1M=
+OPENAI_PRICE_GPT_4O_2024_08_06_OUTPUT_PER_1M=
+OPENAI_PRICE_GPT_IMAGE_1_INPUT_PER_1M=
+OPENAI_PRICE_GPT_IMAGE_1_OUTPUT_PER_1M=
 ```
 
 Environment values are loaded from `backend_api/.env` via `python-dotenv`.
+If pricing env vars are left blank, the app still logs usage per client, but `estimated_cost_usd` remains empty.
 
 ## 3) Run with batch files (recommended)
 
@@ -69,3 +76,5 @@ streamlit run app.py --server.port 8501
 - Error handling is intentionally simple for MVP: exceptions are surfaced directly.
 - OpenAI calls are backend-only.
 - UI and backend are already separated for future React/Next.js migration.
+- Client tracking logs are written to `backend_api/cost_logs/<client_id>.json`.
+- The Streamlit UI now captures `Client ID` and `Activity Title`, and reuses one `Activity ID` until you click `New Activity`.

@@ -4,12 +4,17 @@ import base64
 import hashlib
 import json
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import requests
 import streamlit as st
 
 BACKEND_DEFAULT = "http://localhost:8000"
+
+
+def _new_activity_id() -> str:
+    return f"activity-{uuid4().hex[:10]}"
 
 
 st.set_page_config(page_title="Home Builder", page_icon="", layout="wide")
@@ -41,6 +46,14 @@ if "active_prompt_pack" not in st.session_state:
     st.session_state.active_prompt_pack = ""
 if "prompt_pack_loaded_for_backend" not in st.session_state:
     st.session_state.prompt_pack_loaded_for_backend = ""
+if "tracking_activity_id" not in st.session_state:
+    st.session_state.tracking_activity_id = _new_activity_id()
+if "last_tracking_summary" not in st.session_state:
+    st.session_state.last_tracking_summary = {}
+if "client_id_input" not in st.session_state:
+    st.session_state.client_id_input = "default-client"
+if "activity_title_input" not in st.session_state:
+    st.session_state.activity_title_input = "Untitled Activity"
 
 
 def _uploaded_to_entry(file: Any | None, source: str) -> dict[str, Any] | None:
@@ -94,6 +107,24 @@ def _normalize_spec_payload(spec_payload: Any) -> dict[str, str]:
 def _spec_error_message(spec: dict[str, Any]) -> str | None:
     error = str(spec.get("error", "")).strip()
     return error or None
+
+
+def _build_tracking_form_data() -> dict[str, str]:
+    client_id = str(st.session_state.get("client_id_input", "default-client")).strip()
+    activity_title = str(st.session_state.get("activity_title_input", "Untitled Activity")).strip()
+    activity_id = str(st.session_state.get("tracking_activity_id", "")).strip() or _new_activity_id()
+    st.session_state.tracking_activity_id = activity_id
+    return {
+        "client_id": client_id or "default-client",
+        "activity_id": activity_id,
+        "activity_title": activity_title or "Untitled Activity",
+    }
+
+
+def _apply_tracking_summary(payload: dict[str, Any]) -> None:
+    tracking = payload.get("tracking")
+    if isinstance(tracking, dict):
+        st.session_state.last_tracking_summary = tracking
 
 
 def _refresh_prompt_packs(backend_url: str) -> str | None:
@@ -168,6 +199,45 @@ def _support_prompts_for_entries(support_entries: list[dict[str, Any]]) -> list[
 
 st.title("AI Photo Studio")
 st.caption("Minimal single-page flow with temporary session memory only")
+
+tracking_col_1, tracking_col_2, tracking_col_3, tracking_col_4 = st.columns([1.4, 2.0, 1.6, 0.9])
+with tracking_col_1:
+    st.text_input("Client ID", key="client_id_input", help="Stored as the JSON filename in backend_api/cost_logs.")
+with tracking_col_2:
+    st.text_input("Activity Title", key="activity_title_input", help="Used to group related calls under this client.")
+with tracking_col_3:
+    st.text_input("Activity ID", value=st.session_state.tracking_activity_id, disabled=True)
+with tracking_col_4:
+    st.write("")
+    st.write("")
+    if st.button("New Activity"):
+        st.session_state.tracking_activity_id = _new_activity_id()
+        st.session_state.last_tracking_summary = {}
+        st.rerun()
+
+tracking_summary = st.session_state.last_tracking_summary
+if tracking_summary:
+    summary_col_1, summary_col_2, summary_col_3, summary_col_4 = st.columns(4)
+    estimated_cost = tracking_summary.get("estimated_cost_usd")
+    summary_col_1.metric(
+        "Estimated Cost",
+        f"${float(estimated_cost):.4f}" if estimated_cost is not None else "Not priced",
+    )
+    summary_col_2.metric("Tracked Calls", int(tracking_summary.get("total_events", 0) or 0))
+    summary_col_3.metric(
+        "Generated Images",
+        int(tracking_summary.get("total_generated_images", 0) or 0),
+    )
+    summary_col_4.metric(
+        "Unpriced Calls",
+        int(tracking_summary.get("unpriced_event_count", 0) or 0),
+    )
+    if tracking_summary.get("log_file"):
+        st.caption(f"Cost log file: {tracking_summary['log_file']}")
+    if estimated_cost is None and int(tracking_summary.get("total_events", 0) or 0) > 0:
+        st.caption(
+            "Pricing env vars are not configured yet, so usage is logged but estimated cost stays empty."
+        )
 
 backend_url = st.text_input("Backend URL", value=BACKEND_DEFAULT).rstrip("/")
 
@@ -279,10 +349,12 @@ with left_col:
                     response = requests.post(
                         f"{backend_url}/spec/extract",
                         files=files_payload,
+                        data=_build_tracking_form_data(),
                         timeout=120,
                     )
                 response.raise_for_status()
                 data = response.json()
+                _apply_tracking_summary(data)
                 normalized_spec = _normalize_spec_payload(data.get("spec", {}))
                 error_message = _spec_error_message(normalized_spec)
 
@@ -383,6 +455,7 @@ if generate_clicked:
             "support_prompts_json": json.dumps(support_prompts),
             "spec_json": json.dumps(st.session_state.extracted_spec),
         }
+        form_data.update(_build_tracking_form_data())
 
         try:
             with st.spinner("Generating final output image..."):
@@ -394,6 +467,7 @@ if generate_clicked:
                 )
             response.raise_for_status()
             data: dict[str, Any] = response.json()
+            _apply_tracking_summary(data)
             st.session_state.generated_images = data.get("images_base64", [])
             if st.session_state.generated_images:
                 st.success("Generated final image.")

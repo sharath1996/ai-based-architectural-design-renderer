@@ -58,22 +58,37 @@ def set_prompt_pack(payload: PromptPackSelectionRequest) -> PromptPackStatusResp
 
 
 @app.post("/spec/extract", response_model=SpecExtractResponse)
-async def spec_extract(files: list[UploadFile] = File(...)) -> SpecExtractResponse:
+async def spec_extract(
+    files: list[UploadFile] = File(...),
+    client_id: str = Form("default-client"),
+    activity_id: str = Form(""),
+    activity_title: str = Form("Untitled Activity"),
+) -> SpecExtractResponse:
     image_bytes = [await file.read() for file in files]
+    tracking_context = image_generator_api.create_tracking_context(
+        client_id=client_id,
+        activity_id=activity_id,
+        activity_title=activity_title,
+        endpoint="spec_extract",
+    )
     try:
-        specs = image_generator_api.extract_specs(image_bytes)
+        specs = image_generator_api.extract_specs(image_bytes, tracking_context=tracking_context)
         spec_dict = specs.to_dict()
         bullets = specs.bullet_points()
+        tracking = image_generator_api.get_tracking_summary(tracking_context)
         if not spec_dict:
             return SpecExtractResponse(
                 spec={"error": NO_STYLE_LOADED_MESSAGE},
                 bullet_points=[NO_STYLE_LOADED_MESSAGE],
+                tracking=tracking,
             )
-        return SpecExtractResponse(spec=spec_dict, bullet_points=bullets)
+        return SpecExtractResponse(spec=spec_dict, bullet_points=bullets, tracking=tracking)
     except RuntimeError:
+        tracking = image_generator_api.get_tracking_summary(tracking_context)
         return SpecExtractResponse(
             spec={"error": NO_STYLE_LOADED_MESSAGE},
             bullet_points=[NO_STYLE_LOADED_MESSAGE],
+            tracking=tracking,
         )
 
 
@@ -83,8 +98,17 @@ async def generate_references(
     prompt: str = Form(""),
     support_prompts_json: str = Form("[]"),
     spec_json: str = Form("{}"),
+    client_id: str = Form("default-client"),
+    activity_id: str = Form(""),
+    activity_title: str = Form("Untitled Activity"),
 ) -> GenerateResponse:
     image_bytes = [await file.read() for file in files]
+    tracking_context = image_generator_api.create_tracking_context(
+        client_id=client_id,
+        activity_id=activity_id,
+        activity_title=activity_title,
+        endpoint="generate_references",
+    )
 
     # Accept old dict payloads and new structured payloads via API wrapper parsing.
     results = image_generator_api.generate(
@@ -92,5 +116,7 @@ async def generate_references(
         support_prompts_json=support_prompts_json,
         spec_json=spec_json,
         prompt=prompt,
+        tracking_context=tracking_context,
     )
-    return GenerateResponse(images_base64=results, count=len(results))
+    tracking = image_generator_api.get_tracking_summary(tracking_context)
+    return GenerateResponse(images_base64=results, count=len(results), tracking=tracking)
