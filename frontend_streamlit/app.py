@@ -248,6 +248,25 @@ with left_col:
                 placeholder="What should this support image influence?",
             )
 
+        support_preview_rows = []
+        for idx, support_item in enumerate(support_entries):
+            support_preview_rows.append(
+                {
+                    "support_index": idx + 1,
+                    "image_name": support_item["name"],
+                    "prompt": str(
+                        st.session_state.get(f"support_prompt_{support_item['id']}", "")
+                    ).strip(),
+                }
+            )
+
+        st.caption("Support mapping preview (used in generation order)")
+        st.dataframe(
+            pd.DataFrame(support_preview_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
     extract_clicked = st.button("Extract Specs", type="primary")
 
     if extract_clicked:
