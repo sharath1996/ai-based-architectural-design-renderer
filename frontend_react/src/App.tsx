@@ -36,7 +36,7 @@ type ApiState = {
 
 const DEFAULT_BACKEND_URL = 'http://localhost:8000'
 const REQUIRED_SPEC_HINT =
-  'Select a style pack, choose a base anchor image, add support references if needed, then extract specs.'
+  'Pick a style, choose a base image, add supporting images, then extract the editable spec set.'
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)
@@ -316,15 +316,15 @@ function App() {
   return (
     <div className="studio-shell">
       <div className="studio-background" />
-      <div className="studio-grid" />
+      <div className="studio-orbs" />
 
       <main className="studio-app">
         <section className="hero-card">
           <div className="hero-copy">
             <p className="eyebrow">AI Photo Studio</p>
-            <h1>Minimal UI, premium output.</h1>
+            <h1>Simple editor. Rich final image.</h1>
             <p className="hero-text">
-              One base anchor image, multiple support references, a prompt pack selector, and a single polished final render.
+              Build one final image from a base anchor, support references, prompt packs, and a clean spec editor.
             </p>
           </div>
           <div className="hero-meta">
@@ -341,8 +341,8 @@ function App() {
         <section className="toolbar-card card">
           <div className="toolbar-header">
             <div>
-              <h2>Studio Settings</h2>
-              <p>Choose the style pack that drives extraction and generation.</p>
+              <h2>Workspace</h2>
+              <p>Choose the style pack that powers extraction and generation.</p>
             </div>
             <label className="backend-field">
               Backend URL
@@ -377,8 +377,8 @@ function App() {
             <section className="card">
               <div className="section-header">
                 <div>
-                  <h2>1. Base Anchor Image</h2>
-                  <p>Main composition reference for the output.</p>
+                  <h2>1. Base Image</h2>
+                  <p>The primary composition anchor for the final render.</p>
                 </div>
               </div>
 
@@ -389,12 +389,12 @@ function App() {
                     <img src={baseImage.url} alt={baseImage.name} />
                     <div>
                       <strong>{baseImage.name}</strong>
-                      <span>Base anchor image</span>
+                      <span>Main reference image</span>
                     </div>
                   </div>
                 ) : (
                   <div className="upload-placeholder">
-                    <span>Drop or choose one image</span>
+                    <span>Drop or choose your main image</span>
                     <p>This image anchors the final composition.</p>
                   </div>
                 )}
@@ -404,16 +404,16 @@ function App() {
             <section className="card">
               <div className="section-header">
                 <div>
-                  <h2>2. Support References</h2>
-                  <p>Upload multiple support references with a prompt for each one.</p>
+                  <h2>2. Supporting Images</h2>
+                  <p>Add extra references for lighting, mood, texture, or styling.</p>
                 </div>
               </div>
 
               <label className="upload-box support-upload">
                 <input type="file" accept="image/*" multiple onChange={(event) => handleSupportUpload(event.target.files)} />
                 <div className="upload-placeholder">
-                  <span>Drop or choose support images</span>
-                  <p>These guide mood, material, lighting, and styling details.</p>
+                  <span>Drop or choose supporting images</span>
+                  <p>Use these to steer mood, finish, lighting, and product details.</p>
                 </div>
               </label>
 
@@ -530,8 +530,8 @@ function App() {
             <section className="card">
               <div className="section-header compact">
                 <div>
-                  <h2>4. Prompt</h2>
-                  <p>Give the model a final creative direction.</p>
+                  <h2>4. Creative Prompt</h2>
+                  <p>Give the model the final direction and mood.</p>
                 </div>
               </div>
 
@@ -546,11 +546,11 @@ function App() {
 
             <section className="card generate-card">
               <div>
-                <h2>5. Generate Final Image</h2>
-                <p>The final output combines the base anchor, support signals, specs, and prompt pack.</p>
+                <h2>5. Generate</h2>
+                <p>The final output combines the base image, support signals, specs, and style pack.</p>
               </div>
               <button className="primary-button generate-button" onClick={generateImage} disabled={!canGenerate}>
-                {generateState.loading ? 'Generating...' : 'Generate Final Image'}
+                {generateState.loading ? 'Generating...' : 'Create Final Image'}
               </button>
               {generateState.error ? <p className="error-line">{generateState.error}</p> : null}
             </section>
@@ -559,7 +559,7 @@ function App() {
               <div className="section-header compact">
                 <div>
                   <h2>6. Final Output</h2>
-                  <p>One premium render appears here.</p>
+                  <p>Your finished image appears here.</p>
                 </div>
               </div>
 
@@ -567,11 +567,11 @@ function App() {
                 <div className="output-panel">
                   <img src={`data:image/png;base64,${generatedImage}`} alt="Generated final output" />
                   <a className="download-button" href={`data:image/png;base64,${generatedImage}`} download="generated_final_output.png">
-                    Download Final Image
+                    Download image
                   </a>
                 </div>
               ) : (
-                <div className="output-empty">Your final generated image will appear here.</div>
+                <div className="output-empty">Your final image will appear here.</div>
               )}
             </section>
           </div>
