@@ -31,6 +31,13 @@ AVAILABLE_IMAGE_SIZES = (
     "1024x1024",
     "1536x1024",
     "1024x1536",
+    "640x480",
+    "1280x720",
+)
+OPENAI_API_IMAGE_SIZES = (
+    "1024x1024",
+    "1536x1024",
+    "1024x1536",
 )
 
 class ImageGenerator:
@@ -171,6 +178,30 @@ class ImageGenerator:
         except (ValueError, AttributeError):
             pass
         return 1024, 1024
+
+    def _resolve_api_generation_size(self, image_size: str) -> str:
+        if image_size in OPENAI_API_IMAGE_SIZES:
+            return image_size
+
+        width, height = self._size_to_dimensions(image_size)
+        if width > height:
+            return "1536x1024"
+        if height > width:
+            return "1024x1536"
+        return "1024x1024"
+
+    def _resize_generated_b64_image(self, generated_b64: str, image_size: str) -> str:
+        target_width, target_height = self._size_to_dimensions(image_size)
+        try:
+            decoded = base64.b64decode(generated_b64)
+            with Image.open(io.BytesIO(decoded)) as generated_image:
+                resized = generated_image.convert("RGB").resize((target_width, target_height), Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            resized.save(buffer, format="PNG")
+            return base64.b64encode(buffer.getvalue()).decode("utf-8")
+        except Exception:
+            logger.exception("Failed to resize generated image to requested output size")
+            return generated_b64
 
     def _placeholder_image(self, label: str, index: int, image_size: str = DEFAULT_IMAGE_SIZE) -> str:
         width, height = self._size_to_dimensions(image_size)
@@ -348,6 +379,7 @@ class ImageGenerator:
     ) -> str:
         selected_image_model = self._select_image_model(image_model)
         selected_image_size = self._select_image_size(image_size)
+        api_generation_size = self._resolve_api_generation_size(selected_image_size)
 
         client = self._client()
         if not client:
@@ -377,7 +409,7 @@ class ImageGenerator:
                 model=selected_image_model,
                 image=image_buffer,
                 prompt=combined_prompt,
-                size=selected_image_size,
+                size=api_generation_size,
             )
 
             generated_b64 = None
@@ -396,11 +428,14 @@ class ImageGenerator:
                     "support_reference_count": len(support_reference_images),
                     "prompt_pack": self._prompt_pack,
                     "size": selected_image_size,
+                    "api_size": api_generation_size,
                 },
                 error_message=None if generated_b64 else "No image data returned from OpenAI.",
             )
 
             if generated_b64:
+                if selected_image_size != api_generation_size:
+                    generated_b64 = self._resize_generated_b64_image(generated_b64, selected_image_size)
                 return generated_b64
             return self._placeholder_image(NO_STYLE_LOADED_MESSAGE, 0, selected_image_size)
         except Exception as exc:
@@ -413,6 +448,7 @@ class ImageGenerator:
                     "support_reference_count": len(support_reference_images),
                     "prompt_pack": self._prompt_pack,
                     "size": selected_image_size,
+                    "api_size": api_generation_size,
                 },
                 error_message=str(exc),
             )
