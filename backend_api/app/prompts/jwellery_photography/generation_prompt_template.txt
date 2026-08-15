@@ -9,9 +9,11 @@ Support references and intended influence:
 {support_reference_context}
 
 Scene instructions:
-- Keep product composition anchored to the provided reference image.
-- Preserve item geometry and placement unless explicitly requested.
-- Improve realism via lighting, reflections, micro texture, and surface cleanup only.
+- Keep composition anchored to the provided base anchor image.
+- Preserve exact jewelry geometry, design details, and placement unless explicitly requested.
+- Preserve exact model identity and facial features when a person is visible in the anchor image.
+- Present jewelry clearly as worn on the model (male or female) with premium commercial styling.
+- Improve realism via lighting, reflections, metal and gemstone behavior, skin texture, and cleanup only.
 
 Specifications (key-value):
 {spec_text}

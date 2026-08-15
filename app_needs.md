@@ -1,187 +1,151 @@
-## AI Photo Studio - Product Needs (MVP)
+## AI Photo Studio — Product Needs (MVP)
 
-## 1) Product Goal
+Purpose
+-------
+Design an AI Photo Studio focused on a simple, reliable two-step workflow:
 
-Build a generic AI Photo Studio that supports multiple photography domains through interchangeable prompt packs (for example architectural, jwellery, food), while keeping the code path and UI flow the same.
+- Step A — Scene Description: user supplies one base image + zero-or-more reference images and short prompts; an LLM synthesizes a single, detailed scene description tailored to the selected photography style.
+- Step B — Image Generation: after the user reviews/edits/approves the scene description, the backend generates exactly one final image using the approved description plus all image inputs and style prompts.
 
-Core idea:
-- code stays stable
-- prompt pack changes behavior
-- one shared extraction and generation pipeline
+Principles
+----------
+- Single canonical flow for all styles (style packs change text prompts to the LLM and generation model, not code flow).
+- The LLM's role is to create a human- and machine-readable scene description that the image generator consumes.
+- The user always reviews and approves the scene description before generation.
 
-## 2) Current Domain Packs
+Prompt Pack Requirements
+-----------------------
+Each style folder must include:
 
-- architectural_photography
-- jwellery_photography
-- food_photography
+- `base_render_system_prompt.txt` — must be injected into the LLM call to enforce style constraints.
+- `final_presentation_profile.txt` — post-processing quality / finishing guidance.
+- `generation_prompt_template.txt` — template pieces used to build the final generation prompt for the image model.
+- `spec_extraction_prompt.txt` — (optional) helper prompts or examples used during scene-description generation.
 
-Each prompt pack must contain:
-- base_render_system_prompt.txt
-- final_presentation_profile.txt
-- generation_prompt_template.txt
-- spec_extraction_prompt.txt
+End-to-end User Flow (fresh)
+----------------------------
 
-## 3) End-to-End User Flow
+1. User chooses a style pack from the dropdown.
+2. User uploads exactly one base (anchor) image and zero-or-more reference images.
+3. Optionally, the user enters a short per-reference intent for each support image and a short global user prompt.
+4. User clicks `Describe Scene`.
+   - Backend: collects images, per-image intents, global prompt and injects `base_render_system_prompt.txt` for the chosen style into an LLM call.
+   - LLM: returns a structured `spec` (JSON-like key/value), a human-friendly `scene_description` string, and concise `bullet_points` explaining important decisions.
+5. UI: displays editable `scene_description` and the structured `spec` for inline edits.
+6. User edits and approves the scene description (final approval required to proceed).
+7. User clicks `Generate`.
+   - Backend assembles the final generation prompt using `generation_prompt_template.txt`, `final_presentation_profile.txt`, approved `scene_description`, `spec`, all images and per-image intents, then calls the image-generation model.
+8. Backend returns a single base64 image plus optional `diagnostics` and `bullet_points` used for reproducibility.
+9. UI displays the image and offers download/save-as-reference.
 
-1. User selects photography style from dropdown (prompt pack).
-2. User uploads one base reference image (main anchor image).
-3. User uploads multiple support reference images.
-4. User provides one support prompt per support image (what that image should influence).
-5. User clicks spec extraction.
-6. Backend extracts structured specifications using AI structured output.
-7. UI displays editable key-value spec rows.
-8. User edits specs and enters additional prompt.
-9. User clicks generation.
-10. Backend generates one final output image by combining all context: base anchor image, support references, per-support prompts, extracted/edited specs, and global user prompt.
-11. UI shows final result and allows download/save-as-reference.
+API Endpoints (recommended)
+---------------------------
 
-## 4) Functional Requirements
+- `GET /health` — basic health check.
+- `GET /prompt-packs` — returns `{ "active_prompt_pack": "...", "available_prompt_packs": [ ... ] }`.
+- `POST /prompt-packs/select` — body `{ "prompt_pack": "architectural_photography" }` to change active style.
+- `POST /scene/describe` — payload (multipart/form-data):
+  - `base_image` (file, required)
+  - `reference_images[]` (files, optional)
+  - `reference_intents[]` (strings matching `reference_images[]` order, optional)
+  - `global_prompt` (string, optional)
+  - `style` (string, optional; server uses active style if not provided)
 
-### 4.1 Style Management
+  Returns:
 
-- UI must load available prompt folders from backend.
-- UI must set active prompt folder without backend restart.
-- Backend validates selected prompt pack contains all required files.
-- Active style is visibly shown in UI near generation controls.
+  {
+    "scene_description": "...",
+    "spec": { ... },
+    "bullet_points": ["..."]
+  }
 
-### 4.2 Spec Extraction
+- `POST /generate/references` — payload (multipart/json mix):
+  - `base_image` (file)
+  - `reference_images[]` (files)
+  - `reference_intents[]` (strings)
+  - `scene_description` (string) — required, must be user-approved
+  - `spec` (JSON) — optional edited spec
+  - `global_prompt` (string)
+  - `style` (string)
 
-- Extraction must return structured Specifications model internally.
-- API response remains frontend-friendly (`spec` dict + `bullet_points`).
-- Extraction should prioritize the base reference image for scene/product structure and use support references as optional detail/style hints.
-- On style/config/runtime failure, return clear error message: `No image generation style loaded.`
+  Returns:
 
-### 4.3 Image Generation
+  {
+    "image_base64": "...",
+    "diagnostics": { "model": "..., "prompt": "..." }
+  }
 
-- Output count is always 1.
-- Base reference image is the primary composition/geometry anchor.
-- Support references contribute targeted influence only (material, mood, lighting, styling, texture, color, etc.).
-- Each support reference must have a per-image intent prompt.
-- Final rendering must consider all inputs together in a single pass:
-  - base anchor image
-  - support reference images
-  - support-reference prompts
-  - structured extracted/edited specs
-  - user global prompt
-  - selected style pack prompt files
-- On errors, return placeholder image with clear message.
+Design & Data Models (concise)
+------------------------------
 
-## 5) Target API Surface (Next Iteration)
+- SceneDescriptionResponse:
+  - `scene_description`: string
+  - `spec`: dict (flexible key/value pairs)
+  - `bullet_points`: list[str]
 
-- `GET /health`
-- `GET /prompt-packs`
-  - returns active_prompt_pack and available_prompt_packs
-- `POST /prompt-packs/select`
-  - input: prompt_pack
-  - switches active style at runtime
-- `POST /spec/extract`
-  - base reference (required) + support references (optional)
-  - returns extracted spec + bullet points
-- `POST /generate/references`
-  - base reference + support references + support prompts + prompt + spec_json
-  - returns one base64 generated image
+- GenerationRequest: includes final `scene_description`, `spec`, images, intents, style.
 
-## 6) High-Level Architecture
+High-level Architecture
+-----------------------
 
 ```mermaid
 flowchart LR
-    U[User] --> UI[Streamlit UI]
-    UI --> API[FastAPI Backend]
-
-    UI --> STY[Style Selector Dropdown]
-    STY --> API
-
-    API --> WRAP[ImageGeneratorAPIWrapper]
-    WRAP --> GENCLASS[ImageGenerator]
-
-    UI --> BASE[Base Reference Image]
-    UI --> SUP[Support Reference Images + Per-Image Prompts]
-
-    BASE --> API
-    SUP --> API
-
-    GENCLASS --> PACK[Prompt Pack Folder]
-    GENCLASS --> OAI[OpenAI API]
-
-    OAI --> GENCLASS
-    GENCLASS --> API
-    API --> UI
+  U[User] --> UI[Streamlit UI]
+  UI --> API[FastAPI Backend]
+  UI --> STY[Style Selector]
+  STY --> API
+  UI --> BASE[Base Image]
+  UI --> REF[Reference Images and Intents]
+  UI --> DESCR[Describe Scene]
+  DESCR --> API
+  API --> LLM[Scene Description Generator - LLM]
+  LLM --> API
+  API --> UI
+  UI --> APPROVE[User Approval]
+  APPROVE --> API
+  API --> GENWRAP[Image Generator API Wrapper]
+  GENWRAP --> IMAGE[Image Generation Model]
+  IMAGE --> API
+  API --> UI
 ```
 
-## 7) Architectural Photography - Complete Detail
+Style Pack Behavior
+-------------------
 
-This section defines how the architectural_photography style should behave.
+- The style pack must be injected in two places:
+  1. Scene-description LLM call (via `base_render_system_prompt.txt`) so the description obeys style constraints (tone, composition rules, preservation rules).
+  2. Generation prompt assembly (`generation_prompt_template.txt` + `final_presentation_profile.txt`) to influence rendering quality and finishing.
 
-### 7.1 Intent
+UI/UX Guidelines (MVP)
+----------------------
 
-- Transform rough architectural references into polished, photorealistic results.
-- Preserve geometry/layout and camera framing from the base reference unless explicitly requested.
-- Improve realism primarily via materials, lighting, reflections, and finish quality.
+- Single-page flow.
+- Style selector and visible active style badge.
+- Base image uploader (single required slot).
+- Reference image uploader with short per-image intent fields.
+- `Describe Scene` button and editable `scene_description` + structured `spec` view.
+- `Generate` button only enabled after user approval of the scene description.
+- Result card with the generated image and download/save-as-reference actions.
 
-Support-reference behavior in architectural mode:
-- Example support reference intents: material finish, lighting mood, color palette, decor style cues.
-- Support references should not override base geometry/layout constraints.
+Failure Modes & Diagnostics
+--------------------------
 
-### 7.2 Hard Constraints
+- Missing/invalid style files → clear error: `No image generation style loaded.`
+- LLM failure → return partial `scene_description` (if any) and `error` describing the failure.
+- Generation failure → return placeholder image and a `diagnostics` object with model response and error hints.
 
-- No camera/framing/perspective drift unless explicitly requested.
-- No major architectural additions/removals.
-- No arbitrary object movement, resizing, or orientation changes.
-- No text, logos, labels, or watermarks.
+Security & Privacy Notes
+------------------------
 
-### 7.3 Quality Profile
+- Images and prompts are treated as user data; keep them local for MVP unless user opts to persist or send to external services.
+- If using third-party APIs, ensure users are informed that data (images/prompt text) will be transmitted.
 
-- Final-presentation visual quality.
-- Realistic material roughness/reflections.
-- Balanced architectural lighting and clean shadows.
-- Client-ready finish.
+Next Practical Steps
+--------------------
 
-### 7.4 Expected Spec Themes
+1. Add API route stubs for `POST /scene/describe` and `POST /generate/references` in `backend_api/app/main.py` (or the existing router).
+2. Implement `SceneDescriptionGenerator` wrapper that calls the LLM and returns the `SceneDescriptionResponse` model.
+3. Implement `ImageGeneratorAPIWrapper` that assembles the final prompt and calls the image generation model.
 
-Extraction may include keys such as:
-- room_type
-- style
-- material themes
-- wall/floor/ceiling notes
-- lighting intent
-- composition constraints
-
-Spec keys are editable and not schema-locked in UI; users can add/remove fields.
-
-### 7.5 Prompt Assembly Pattern
-
-Generation prompt is built from:
-1. base_render_system_prompt.txt
-2. final_presentation_profile.txt
-3. generation_prompt_template.txt
-4. serialized extracted/edited spec JSON
-5. base reference anchor instruction
-6. support reference images + per-image intent prompts
-7. additional user intent text
-
-Final generation objective:
-- Produce one image that preserves anchor composition while integrating the best relevant signals from support references and prompts.
-
-### 7.6 Failure Mode
-
-If style files are missing or invalid, the system surfaces:
-- `No image generation style loaded.`
-
-## 8) UI/UX Requirements (Current MVP)
-
-- Single-page Streamlit flow.
-- Dedicated base reference image picker (exactly one active base image).
-- Support reference section with one prompt input per support image.
-- Editable spec grid.
-- Prompt text area.
-- Style dropdown + apply + refresh controls.
-- Active style badge visible before generation.
-- Generated output section displays exactly one final image per run.
-
-## 9) Scope Boundary (MVP)
-
-- Single local workspace usage.
-- No multi-tenant/auth workflow.
-- No persistent backend project storage required for MVP.
-- Focus on predictable generation behavior via style packs.
+If you want, I can scaffold the API endpoints and Pydantic models next (`SceneDescriptionResponse`, `GenerationRequest`) and add a minimal integration using the existing `image_generator.py` service as a starting point.
 

@@ -1,4 +1,7 @@
 Quality profile: premium_jewelry_catalog
+
 - Emphasize clean, luxurious lighting with controlled specular highlights.
 - Preserve realistic gemstone brilliance, refraction cues, and metal micro-reflections.
 - Prioritize premium e-commerce quality with crisp edges and accurate color rendering.
+- Compose for jewelry-on-model presentation where the jewelry remains the hero subject.
+- Preserve exact model identity (facial structure and defining features) while improving skin realism.

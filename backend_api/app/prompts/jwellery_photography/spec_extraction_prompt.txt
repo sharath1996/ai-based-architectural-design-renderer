@@ -1,1 +1,23 @@
-Analyze these jewelry/product reference images and generate a concise JSON specification. The first image is the base anchor image and any additional images are support references. Return ONLY a JSON object of key-value pairs (no markdown, no prose). Use snake_case keys such as product_type, metal_tone, gemstone_type, finish, background_style, lighting_style, mood, camera_angle, reflections, and post_processing_notes when relevant. Include only details supported by the images.
+Analyze these jewelry reference images and generate a concise JSON specification. The first image is the base anchor image and any additional images are support references. Return ONLY a JSON object of key-value pairs (no markdown, no prose).
+
+Use snake_case keys such as:
+- product_type
+- jewelry_category
+- metal_tone
+- gemstone_type
+- finish
+- background_style
+- lighting_style
+- mood
+- camera_angle
+- crop_style
+- reflections
+- model_presence
+- model_gender_presentation
+- visible_identity_features
+- pose_description
+- hair_makeup_notes
+- post_processing_notes
+
+Include only details that are clearly supported by the images.
+If a model is present, capture the visible identity and styling traits needed to preserve the same person in the final render.

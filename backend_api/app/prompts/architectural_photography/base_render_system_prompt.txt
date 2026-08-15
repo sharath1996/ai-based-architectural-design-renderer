@@ -9,7 +9,7 @@ Primary objective:
 
 Hard constraints:
 1) Do not change camera position, framing, perspective, or room proportions.
-2) Do not invent or remove major architectural elements.
+2) Do not invent or remove major architectural elements unless speicfied by the user in the specifications.
 3) Keep object placement consistent with the base render.
 4) Treat Blender geometry as authoritative; refine appearance, materials, and lighting only.
 

@@ -9,6 +9,8 @@ from uuid import uuid4
 import pandas as pd
 import requests
 import streamlit as st
+import os
+from pathlib import Path
 
 BACKEND_DEFAULT = "http://localhost:8000"
 
@@ -55,11 +57,11 @@ if "client_id_input" not in st.session_state:
 if "activity_title_input" not in st.session_state:
     st.session_state.activity_title_input = "Untitled Activity"
 if "available_image_models" not in st.session_state:
-    st.session_state.available_image_models = ["gpt-image-1"]
+    st.session_state.available_image_models = ["gpt-image-2"]
 if "available_image_sizes" not in st.session_state:
     st.session_state.available_image_sizes = ["1024x1024", "1536x1024", "1024x1536"]
 if "selected_image_model" not in st.session_state:
-    st.session_state.selected_image_model = "gpt-image-1"
+    st.session_state.selected_image_model = "gpt-image-2"
 if "selected_image_size" not in st.session_state:
     st.session_state.selected_image_size = "1024x1024"
 if "generation_options_loaded_for_backend" not in st.session_state:
@@ -180,7 +182,7 @@ def _refresh_generation_options(backend_url: str) -> str | None:
 
         models = [str(m) for m in data.get("available_image_models", []) if str(m).strip()]
         sizes = [str(s) for s in data.get("available_image_sizes", []) if str(s).strip()]
-        default_model = str(data.get("default_image_model", "gpt-image-1")).strip() or "gpt-image-1"
+        default_model = str(data.get("default_image_model", "gpt-image-2")).strip() or "gpt-image-2"
         default_size = str(data.get("default_image_size", "1024x1024")).strip() or "1024x1024"
 
         st.session_state.available_image_models = models or [default_model]
@@ -560,15 +562,58 @@ st.subheader("5. Generated Final Image")
 if st.session_state.generated_images:
     image_b64 = st.session_state.generated_images[0]
     image_bytes = base64.b64decode(image_b64)
-    image_name = "generated_final_output.png"
+    default_image_name = "generated_final_output.png"
+
+    # Let user choose a filename for the download
+    download_filename = st.text_input(
+        "Download filename",
+        value=default_image_name,
+        help="Specify the filename suggested to the browser when downloading",
+        key="download_filename",
+    )
+
+    # Optionally save a copy on the server (useful when running Streamlit locally)
+    save_on_server = st.checkbox(
+        "Also save a copy on server",
+        value=False,
+        help=(
+            "If checked, specify a folder below where the Streamlit server will write the file. "
+            "This writes to the server's filesystem (your machine if running locally)."
+        ),
+        key="save_on_server",
+    )
+
+    server_folder = None
+    if save_on_server:
+        server_folder = st.text_input(
+            "Server folder path",
+            value=str(Path.cwd()),
+            help="Folder path on the server where the image will be saved (created if needed)",
+            key="server_save_path",
+        )
+
     st.image(image_bytes, use_container_width=True)
+
+    # Trigger browser download with the chosen filename. Browser controls actual save location.
     st.download_button(
         label="Download Final Image",
         data=image_bytes,
-        file_name=image_name,
+        file_name=download_filename or default_image_name,
         mime="image/png",
         key="download_final_image",
         use_container_width=True,
     )
+
+    # If requested, write the file to the server filesystem
+    if save_on_server and server_folder:
+        try:
+            folder_path = Path(server_folder)
+            folder_path.mkdir(parents=True, exist_ok=True)
+            full_path = folder_path / (download_filename or default_image_name)
+            with open(full_path, "wb") as fh:
+                fh.write(image_bytes)
+            st.success(f"Saved copy to: {full_path}")
+        except Exception as exc:
+            st.error(f"Failed to save on server: {exc}")
 else:
     st.write("Final generated image will appear here.")

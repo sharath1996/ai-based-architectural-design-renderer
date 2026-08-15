@@ -25,7 +25,7 @@ REQUIRED_PROMPT_FILES = (
     "generation_prompt_template.txt",
     "spec_extraction_prompt.txt",
 )
-DEFAULT_IMAGE_MODEL = "gpt-image-1"
+DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_IMAGE_SIZE = "1024x1024"
 AVAILABLE_IMAGE_SIZES = (
     "1024x1024",

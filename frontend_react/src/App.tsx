@@ -42,7 +42,7 @@ type ApiState = {
 }
 
 const DEFAULT_BACKEND_URL = 'http://localhost:8000'
-const DEFAULT_IMAGE_MODEL = 'gpt-image-1'
+const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
 const DEFAULT_IMAGE_SIZE = '1024x1024'
 const REQUIRED_SPEC_HINT =
   'Pick a style, choose a base image, add supporting images, then extract the editable spec set.'
