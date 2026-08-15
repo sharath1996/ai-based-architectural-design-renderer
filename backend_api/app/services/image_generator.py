@@ -1,8 +1,13 @@
 from pydantic import BaseModel, Field
+import os
+from openai import OpenAI
+import base64
+import time
+from pathlib import Path
 
 
 class BaseImage(BaseModel):
-    str_image: str = Field(..., description="Base64 encoded image string")
+    str_image: str = Field(..., description="Base64 encoded image string in the format 'data:image/png;base64,...' or a URL to the image")
     str_imageName: str = Field(..., description="Name of the image file a unique name identifier")
     str_imageDescriptionHuman: str = Field(..., description="Description of the image for human understanding")
 
@@ -15,12 +20,22 @@ class CollectedImages(BaseModel):
 class ImageGenerationResponse(BaseModel):
     str_generatedImage:str = Field(..., description="Base64 encoded image string of the generated image")
 
+    def save(self, param_str_filePath:str) -> None:
+        with open(param_str_filePath, "wb") as f:
+            # Remove the data URL prefix if present
+            if self.str_generatedImage.startswith("data:image/png;base64,"):
+                b64_data = self.str_generatedImage.split(",")[1]
+            else:
+                b64_data = self.str_generatedImage
+
+            f.write(base64.b64decode(b64_data))   
 class ImageGeneratorService:
 
 
     def __init__(self):
 
         self._obj_collectionImages: CollectedImages = None
+        self._str_currentSceneDescription: str | None = None
 
 
     def add_primary_image(self, param_obj_primaryImage: BaseImage) -> None:
@@ -60,10 +75,28 @@ class ImageGeneratorService:
 
         self._obj_collectionImages.str_userPrompt = param_str_userPrompt
 
-        # Here you would implement the logic to generate a detailed scene description based on the user prompt.
+        # Minimal: build messages and ask the LLM for a scene description.
+        # Use SceneDescriptionGenerator (keeps the call surface simple).
+        generator = SceneDescriptionGenerator(style_injection=os.getenv("STYLE_INJECTION", ""))
+        scene_text = generator.generate(self._obj_collectionImages)
+        # store result on both the collection and a simple attribute
+        self._obj_collectionImages.str_sceneDescription = scene_text
+        self._str_currentSceneDescription = scene_text
 
-        # we need to send the primary image and reference images to the gpt-4 model and ask to generate the detailed scene description needed for an image generation model. 
-        # Then it should be reviewed by the user and if the user approves it, then we need to store the detailed scene description in the service.
+        return scene_text
+
+    def modify_scene_description(self, param_str_newSceneDescription:str) -> None:
+        """
+        Modify the existing scene description with a new one.
+
+        Args:
+            param_str_newSceneDescription (str): The new scene description to replace the existing one.
+        """
+        if self._obj_collectionImages is None:
+            raise ValueError("No images have been added to the service.")
+        
+        self._obj_collectionImages.str_sceneDescription = param_str_newSceneDescription
+        self._str_currentSceneDescription = param_str_newSceneDescription
     
     def generate_image(self) -> ImageGenerationResponse:
         """
@@ -83,68 +116,145 @@ class ImageGeneratorService:
     
 
 class ImageGenerator:
+    def __init__(self, model: str | None = None, size: str | None = None) -> None:
+        """Small wrapper around an image-generation API.
 
-    def __init__(self):
-        ...
-
-    def generate(self)-> ImageGenerationResponse:
+        The implementation keeps behavior minimal and mirrors the
+        `SceneDescriptionGenerator` style: configuration via env or
+        constructor and propagation of errors to the caller.
         """
-        Creates the image generation by sending the collected images and detailed task description to the image generation model.
+        self._model = model or os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+        self._size = size or os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
 
-        Returns:
-            ImageGenerationResponse: The response containing the generated image.
+    def _client(self):
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return None
+        return OpenAI(api_key=api_key)
+
+    def generate(self, param_obj_collection: CollectedImages) -> ImageGenerationResponse:
+        """Generate an image from a `CollectedImages` object.
+
+        This mirrors `SceneDescriptionGenerator.generate()` by building
+        a `responses`-style message list that embeds the primary and
+        reference images (as image messages) and then appends the
+        `str_sceneDescription` followed by a final instruction asking
+        the model to produce an image output (data URL / base64).
         """
-        return ImageGenerationResponse()
+        if param_obj_collection is None:
+            raise ValueError("No image collection provided")
+
+        if not param_obj_collection.str_sceneDescription:
+            raise ValueError("Scene description is required for image generation")
+
+        client = self._client()
+        if client is None:
+            raise RuntimeError("OpenAI API key not configured")
+
+        list_messages = []
+
+        # (Optional) small system instruction to prefer image outputs
+        list_messages.append({"role": "system", "content": "You are an image generation assistant. Produce the final output as a data URL starting with 'data:image/png;base64,'."})
+
+        # Add primary image as a user message
+        if param_obj_collection.obj_primaryImage is not None:
+            list_messages.append({"role": "user", "content": self._add_image_as_message(param_obj_collection.obj_primaryImage)})
+
+        # Add all reference images
+        for reference_image in param_obj_collection.list_referenceImages:
+            list_messages.append({"role": "user", "content": self._add_image_as_message(reference_image)})
+
+        # Append the detailed scene description (instead of the short user prompt)
+        list_messages.append({"role": "user", "content": param_obj_collection.str_sceneDescription})
+
+        # Final instruction: ask the model to generate the image (not text)
+        list_messages.append({"role": "user", "content": "Generate the image now and return ONLY a single data URL (data:image/png;base64,<...>) representing the generated image. Do not include any extra text."})
+
+        try:
+            local_resp = client.responses.create(model=self._model, input=list_messages)
+
+            # save the image response
+
+            local_str_imageData = [output.result for output in local_resp.output if output.type == "image_generation_call"]
+            local_str_imageData = local_str_imageData[0] if local_str_imageData else None
+
+            return ImageGenerationResponse(str_generatedImage=local_str_imageData)
+
+        except Exception:
+            raise
+
+    def _add_image_as_message(self, param_obj_image: BaseImage) -> list:
+        local_list_contentMessage = []
+        local_str_imageNameAndDescription = f"Image Name: {param_obj_image.str_imageName}\nDescription: {param_obj_image.str_imageDescriptionHuman}"
+        local_list_contentMessage.append({"type": "input_text", "text": local_str_imageNameAndDescription})
+        local_list_contentMessage.append({"type": "input_image", "image_url": param_obj_image.str_image})
+        return local_list_contentMessage
 
 class SceneDescriptionGenerator:
 
-    def __init__(self):
-        ...
+    def __init__(self, model: str | None = None, style_injection: str | None = None) -> None:
+        """Small wrapper around an LLM call to produce and modify scene descriptions.
 
-    def generate(self, param_str_userPrompt:str) -> str:
+        Behavior is intentionally minimal: configuration via env or constructor
+        and errors are propagated to the caller so the caller can handle them.
         """
-        Generates a detailed scene description based on the user prompt.
+        self._model = model or os.getenv("OPENAI_SCENE_DESCRIPTION_MODEL", "gpt-4.1-mini")
+        self._style_injection = style_injection or ""
+        self._str_currentSceneDescription: str | None = None
 
-        Args:
-            param_str_userPrompt (str): The user prompt to generate the detailed scene description.
+    def _client(self):
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return None
+        return OpenAI(api_key=api_key)
 
-        Returns:
-            str: The generated detailed scene description.
+    def generate(self, collection: CollectedImages) -> str:
+        """Generate a detailed scene description from a `CollectedImages` object.
+
+        The generator embeds base and reference images (as data URLs) plus any
+        human descriptions and the user's short prompt into a single LLM call.
+        Exceptions from the underlying client bubble up to the caller.
         """
-        return "Detailed scene description based on the user prompt."
 
-    def get_scene_description(self, param_str_userPrompt:str) -> str:
-        """
-        Gets the detailed scene description based on the user prompt.
+        client = self._client()
+        if client is None:
+            raise RuntimeError("OpenAI API key not configured")
 
-        Args:
-            param_str_userPrompt (str): The user prompt to get the detailed scene description.
+        list_messages = []
 
-        Returns:
-            str: The detailed scene description based on the user prompt.
-        """
-        return "Detailed scene description based on the user prompt."
+        # Add the style injection as a system message 
+        list_messages.append({"role": "system", "content": self._style_injection})
 
-    def apply_modification(self, param_str_modification:str) -> str:
-        """
-        Applies modifications to the detailed scene description based on user feedback.
+        # Add the base image and it's description as a user message
+        list_messages.append({"role": "user", "content": self._add_image_as_message(collection.obj_primaryImage)})
 
-        Args:
-            param_str_modification (str): The modification to apply to the detailed scene description based on user feedback.
+        # add all the reference images and their descriptions as user messages
 
-        Returns:
-            str: The modified detailed scene description based on user feedback.
-        """
-        return "Modified detailed scene description based on user feedback."
+        for reference_image in collection.list_referenceImages:
+            list_messages.append({"role": "user", "content": self._add_image_as_message(reference_image)})
 
-    def get_final_scene_description(self, param_str_modifiedSceneDescription:str) -> str:
-        """
-        Gets the final detailed scene description after user approval.
+        # Finally, add the user's short prompt as a user message
+        list_messages.append({"role": "user", "content": collection.str_userPrompt})
 
-        Args:
-            param_str_modifiedSceneDescription (str): The modified detailed scene description to finalize.
 
-        Returns:
-            str: The final detailed scene description after user approval.
-        """
-        return "Final detailed scene description after user approval."
+        # use the responses api from openai to get the scene description
+
+        local_obj_response = client.responses.create(
+            model=self._model,
+            input=list_messages,
+        )
+
+        self._str_currentSceneDescription = local_obj_response.output_text
+
+        return local_obj_response.output_text
+
+    
+    def _add_image_as_message(self, param_obj_image: BaseImage)-> list:
+
+        local_list_contentMessage = []
+        local_str_imageNameAndDescription = f"Image Name: {param_obj_image.str_imageName}\nDescription: {param_obj_image.str_imageDescriptionHuman}"
+        local_list_contentMessage.append({"type" : "input_text", "text": local_str_imageNameAndDescription})
+        local_list_contentMessage.append({"type" : "input_image", "image_url": param_obj_image.str_image})
+
+
+        return local_list_contentMessage
