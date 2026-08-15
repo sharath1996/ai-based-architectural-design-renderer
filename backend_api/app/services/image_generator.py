@@ -1,260 +1,199 @@
-from pydantic import BaseModel, Field
-import os
-from openai import OpenAI
+from __future__ import annotations
+
 import base64
-import time
+import io
+import mimetypes
+import os
+import threading
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from openai import OpenAI
+from pydantic import BaseModel, Field
+
+
+PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 
 
 class BaseImage(BaseModel):
-    str_image: str = Field(..., description="Base64 encoded image string in the format 'data:image/png;base64,...' or a URL to the image")
-    str_imageName: str = Field(..., description="Name of the image file a unique name identifier")
-    str_imageDescriptionHuman: str = Field(..., description="Description of the image for human understanding")
+    str_image: str = Field(..., description="Base64 data URL for the image")
+    str_imageName: str = Field(..., description="Original image filename")
+    str_imageDescriptionHuman: str = Field(..., description="Human description or intent")
+
 
 class CollectedImages(BaseModel):
-    obj_primaryImage: BaseImage = Field(..., description="Primary image object that will be used for the image generation")
-    list_referenceImages: list[BaseImage] = Field(..., description="List of reference image objects that will be used for the image generation")
-    str_userPrompt: str = Field(..., description="User prompt that will be used for the image generation")
-    str_sceneDescription: str = Field(..., description="Detailed scene description that will be used for the image generation")
+    obj_primaryImage: BaseImage
+    list_referenceImages: list[BaseImage] = Field(default_factory=list)
+    str_userPrompt: str = ""
+    str_sceneDescription: str = ""
+
 
 class ImageGenerationResponse(BaseModel):
-    str_generatedImage:str = Field(..., description="Base64 encoded image string of the generated image")
+    str_generatedImage: str
 
-    def save(self, param_str_filePath:str) -> None:
-        with open(param_str_filePath, "wb") as f:
-            # Remove the data URL prefix if present
-            if self.str_generatedImage.startswith("data:image/png;base64,"):
-                b64_data = self.str_generatedImage.split(",")[1]
-            else:
-                b64_data = self.str_generatedImage
+    def save(self, param_str_filePath: str) -> None:
+        image_data = self.str_generatedImage.split(",", 1)[-1]
+        Path(param_str_filePath).write_bytes(base64.b64decode(image_data))
 
-            f.write(base64.b64decode(b64_data))   
+
+@dataclass
+class _Session:
+    collection: CollectedImages
+    generated_image: ImageGenerationResponse | None = None
+
+
 class ImageGeneratorService:
+    """Owns prompt-pack selection and state for the six-step photo workflow."""
 
+    def __init__(self) -> None:
+        self._active_prompt_pack = os.getenv("PROMPT_PACK", "architectural_photography")
+        self._sessions: dict[str, _Session] = {}
+        self._lock = threading.Lock()
 
-    def __init__(self):
+    def get_prompt_packs(self) -> tuple[list[str], str]:
+        available = sorted(
+            path.name
+            for path in PROMPTS_DIR.iterdir()
+            if path.is_dir() and (path / "prompt.txt").is_file()
+        ) if PROMPTS_DIR.exists() else []
+        return available, self._active_prompt_pack
 
-        self._obj_collectionImages: CollectedImages = None
-        self._str_currentSceneDescription: str | None = None
+    def select_prompt_pack(self, prompt_pack: str) -> tuple[list[str], str]:
+        available, _ = self.get_prompt_packs()
+        if prompt_pack not in available:
+            raise ValueError("Invalid prompt pack.")
+        self._active_prompt_pack = prompt_pack
+        return available, prompt_pack
 
-
-    def add_primary_image(self, param_obj_primaryImage: BaseImage) -> None:
-        """
-        Add the primary image to the service.
-
-        Args:
-            param_obj_primaryImage (BaseImage): The primary image object to be added.
-        """
-        if self._obj_collectionImages is None:
-            self._obj_collectionImages = CollectedImages(obj_primaryImage=param_obj_primaryImage, list_referenceImages=[], str_userPrompt="", str_sceneDescription="")
-        else:
-            self._obj_collectionImages.obj_primaryImage = param_obj_primaryImage
-    
-    def add_reference_image(self, param_obj_referenceImage:BaseImage) -> None:
-        """
-        Add a reference image to the service.
-
-        Args:
-            param_obj_referenceImage (BaseImage): The reference image object to be added.
-        """
-        if self._obj_collectionImages is None:
-            self._obj_collectionImages = CollectedImages(obj_primaryImage=None, list_referenceImages=[param_obj_referenceImage], str_userPrompt="", str_sceneDescription="")
-        else:
-            self._obj_collectionImages.list_referenceImages.append(param_obj_referenceImage)
-
-    def generate_detailed_task(self, param_str_userPrompt:str) -> None:
-        """
-        Generate a detailed task description based on the user prompt.
-
-        Args:
-            param_str_userPrompt (str): The user prompt to generate the detailed task description.
-        """
-        if self._obj_collectionImages is None:
-            raise ValueError("No images have been added to the service.")
-        
-
-        self._obj_collectionImages.str_userPrompt = param_str_userPrompt
-
-        # Minimal: build messages and ask the LLM for a scene description.
-        # Use SceneDescriptionGenerator (keeps the call surface simple).
-        generator = SceneDescriptionGenerator(style_injection=os.getenv("STYLE_INJECTION", ""))
-        scene_text = generator.generate(self._obj_collectionImages)
-        # store result on both the collection and a simple attribute
-        self._obj_collectionImages.str_sceneDescription = scene_text
-        self._str_currentSceneDescription = scene_text
-
-        return scene_text
-
-    def modify_scene_description(self, param_str_newSceneDescription:str) -> None:
-        """
-        Modify the existing scene description with a new one.
-
-        Args:
-            param_str_newSceneDescription (str): The new scene description to replace the existing one.
-        """
-        if self._obj_collectionImages is None:
-            raise ValueError("No images have been added to the service.")
-        
-        self._obj_collectionImages.str_sceneDescription = param_str_newSceneDescription
-        self._str_currentSceneDescription = param_str_newSceneDescription
-    
-    def generate_image(self) -> ImageGenerationResponse:
-        """
-        Generate an image based on the collected images and detailed task description.
-
-        Returns:
-            ImageGenerationResponse: The response containing the generated image.
-        """
-        if self._obj_collectionImages is None:
-            raise ValueError("No images have been added to the service.")
-        
-        if not self._obj_collectionImages.str_sceneDescription:
-            raise ValueError("Scene description has not been generated.")
-
-        # Here you would implement the logic to generate an image based on the collected images and detailed task description.
-        # Now, this whole collection of images, along with the individual image descriptions and the detailed task description, should be sent to the image genration model.
-    
-
-class ImageGenerator:
-    def __init__(self, model: str | None = None, size: str | None = None) -> None:
-        """Small wrapper around an image-generation API.
-
-        The implementation keeps behavior minimal and mirrors the
-        `SceneDescriptionGenerator` style: configuration via env or
-        constructor and propagation of errors to the caller.
-        """
-        self._model = model or os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
-        self._size = size or os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
-
-    def _client(self):
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return None
-        return OpenAI(api_key=api_key)
-
-    def generate(self, param_obj_collection: CollectedImages) -> ImageGenerationResponse:
-        """Generate an image from a `CollectedImages` object.
-
-        This mirrors `SceneDescriptionGenerator.generate()` by building
-        a `responses`-style message list that embeds the primary and
-        reference images (as image messages) and then appends the
-        `str_sceneDescription` followed by a final instruction asking
-        the model to produce an image output (data URL / base64).
-        """
-        if param_obj_collection is None:
-            raise ValueError("No image collection provided")
-
-        if not param_obj_collection.str_sceneDescription:
-            raise ValueError("Scene description is required for image generation")
-
-        client = self._client()
-        if client is None:
-            raise RuntimeError("OpenAI API key not configured")
-
-        list_messages = []
-
-        # (Optional) small system instruction to prefer image outputs
-        list_messages.append({"role": "system", "content": "You are an image generation assistant. Produce the final output as a data URL starting with 'data:image/png;base64,'."})
-
-        # Add primary image as a user message
-        if param_obj_collection.obj_primaryImage is not None:
-            list_messages.append({"role": "user", "content": self._add_image_as_message(param_obj_collection.obj_primaryImage)})
-
-        # Add all reference images
-        for reference_image in param_obj_collection.list_referenceImages:
-            list_messages.append({"role": "user", "content": self._add_image_as_message(reference_image)})
-
-        # Append the detailed scene description (instead of the short user prompt)
-        list_messages.append({"role": "user", "content": param_obj_collection.str_sceneDescription})
-
-        # Final instruction: ask the model to generate the image (not text)
-        list_messages.append({"role": "user", "content": "Generate the image now and return ONLY a single data URL (data:image/png;base64,<...>) representing the generated image. Do not include any extra text."})
-
+    def _style_prompt(self) -> str:
+        prompt_file = PROMPTS_DIR / self._active_prompt_pack / "prompt.txt"
         try:
-            local_resp = client.responses.create(model=self._model, input=list_messages)
+            prompt = prompt_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError("No image generation style loaded.") from exc
+        if not prompt:
+            raise RuntimeError("No image generation style loaded.")
+        return prompt
 
-            # save the image response
+    @staticmethod
+    def _data_url(image: bytes, filename: str) -> str:
+        mime_type = mimetypes.guess_type(filename)[0] or "image/png"
+        encoded = base64.b64encode(image).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
 
-            local_str_imageData = [output.result for output in local_resp.output if output.type == "image_generation_call"]
-            local_str_imageData = local_str_imageData[0] if local_str_imageData else None
+    def create_session(self, image: bytes, filename: str, description: str) -> str:
+        if not image:
+            raise ValueError("The primary image cannot be empty.")
+        collection = CollectedImages(
+            obj_primaryImage=BaseImage(
+                str_image=self._data_url(image, filename),
+                str_imageName=filename,
+                str_imageDescriptionHuman=description,
+            )
+        )
+        session_id = str(uuid.uuid4())
+        with self._lock:
+            self._sessions[session_id] = _Session(collection=collection)
+        return session_id
 
-            return ImageGenerationResponse(str_generatedImage=local_str_imageData)
+    def _session(self, session_id: str) -> _Session:
+        try:
+            return self._sessions[session_id]
+        except KeyError as exc:
+            raise KeyError("Workflow session not found.") from exc
 
-        except Exception:
-            raise
+    def add_reference(self, session_id: str, image: bytes, filename: str, description: str) -> int:
+        if not image:
+            raise ValueError("The reference image cannot be empty.")
+        session = self._session(session_id)
+        session.collection.list_referenceImages.append(
+            BaseImage(
+                str_image=self._data_url(image, filename),
+                str_imageName=filename,
+                str_imageDescriptionHuman=description,
+            )
+        )
+        return len(session.collection.list_referenceImages)
 
-    def _add_image_as_message(self, param_obj_image: BaseImage) -> list:
-        local_list_contentMessage = []
-        local_str_imageNameAndDescription = f"Image Name: {param_obj_image.str_imageName}\nDescription: {param_obj_image.str_imageDescriptionHuman}"
-        local_list_contentMessage.append({"type": "input_text", "text": local_str_imageNameAndDescription})
-        local_list_contentMessage.append({"type": "input_image", "image_url": param_obj_image.str_image})
-        return local_list_contentMessage
+    @staticmethod
+    def _image_content(image: BaseImage) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "input_text",
+                "text": (
+                    f"Image name: {image.str_imageName}\n"
+                    f"Reference intent: {image.str_imageDescriptionHuman}"
+                ),
+            },
+            {"type": "input_image", "image_url": image.str_image},
+        ]
 
-class SceneDescriptionGenerator:
-
-    def __init__(self, model: str | None = None, style_injection: str | None = None) -> None:
-        """Small wrapper around an LLM call to produce and modify scene descriptions.
-
-        Behavior is intentionally minimal: configuration via env or constructor
-        and errors are propagated to the caller so the caller can handle them.
-        """
-        self._model = model or os.getenv("OPENAI_SCENE_DESCRIPTION_MODEL", "gpt-4.1-mini")
-        self._style_injection = style_injection or ""
-        self._str_currentSceneDescription: str | None = None
-
-    def _client(self):
+    def _client(self) -> OpenAI:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            return None
+            raise RuntimeError("OPENAI_API_KEY is not configured.")
         return OpenAI(api_key=api_key)
 
-    def generate(self, collection: CollectedImages) -> str:
-        """Generate a detailed scene description from a `CollectedImages` object.
+    def get_scene_description(self, session_id: str, user_prompt: str = "") -> str:
+        session = self._session(session_id)
+        collection = session.collection
+        if user_prompt:
+            collection.str_userPrompt = user_prompt
 
-        The generator embeds base and reference images (as data URLs) plus any
-        human descriptions and the user's short prompt into a single LLM call.
-        Exceptions from the underlying client bubble up to the caller.
-        """
+        content = self._image_content(collection.obj_primaryImage)
+        for reference in collection.list_referenceImages:
+            content.extend(self._image_content(reference))
+        content.append({"type": "input_text", "text": f"User request: {collection.str_userPrompt}"})
 
-        client = self._client()
-        if client is None:
-            raise RuntimeError("OpenAI API key not configured")
-
-        list_messages = []
-
-        # Add the style injection as a system message 
-        list_messages.append({"role": "system", "content": self._style_injection})
-
-        # Add the base image and it's description as a user message
-        list_messages.append({"role": "user", "content": self._add_image_as_message(collection.obj_primaryImage)})
-
-        # add all the reference images and their descriptions as user messages
-
-        for reference_image in collection.list_referenceImages:
-            list_messages.append({"role": "user", "content": self._add_image_as_message(reference_image)})
-
-        # Finally, add the user's short prompt as a user message
-        list_messages.append({"role": "user", "content": collection.str_userPrompt})
-
-
-        # use the responses api from openai to get the scene description
-
-        local_obj_response = client.responses.create(
-            model=self._model,
-            input=list_messages,
+        response = self._client().responses.create(
+            model=os.getenv("OPENAI_SCENE_DESCRIPTION_MODEL", "gpt-4.1-mini"),
+            instructions=(
+                self._style_prompt()
+                + "\nCreate one detailed, editable scene description. Return only the description."
+            ),
+            input=[{"role": "user", "content": content}],
         )
+        scene_description = response.output_text.strip()
+        if not scene_description:
+            raise RuntimeError("Scene description generation returned no text.")
+        collection.str_sceneDescription = scene_description
+        return scene_description
 
-        self._str_currentSceneDescription = local_obj_response.output_text
+    def update_scene_description(self, session_id: str, scene_description: str) -> str:
+        if not scene_description.strip():
+            raise ValueError("Scene description cannot be empty.")
+        collection = self._session(session_id).collection
+        collection.str_sceneDescription = scene_description.strip()
+        return collection.str_sceneDescription
 
-        return local_obj_response.output_text
+    @staticmethod
+    def _image_file(image: BaseImage) -> io.BytesIO:
+        _, encoded = image.str_image.split(",", 1)
+        image_file = io.BytesIO(base64.b64decode(encoded))
+        image_file.name = image.str_imageName or "reference.png"
+        return image_file
 
-    
-    def _add_image_as_message(self, param_obj_image: BaseImage)-> list:
+    def generate_image(self, session_id: str) -> ImageGenerationResponse:
+        session = self._session(session_id)
+        collection = session.collection
+        if not collection.str_sceneDescription:
+            raise ValueError("Scene description is required before image generation.")
 
-        local_list_contentMessage = []
-        local_str_imageNameAndDescription = f"Image Name: {param_obj_image.str_imageName}\nDescription: {param_obj_image.str_imageDescriptionHuman}"
-        local_list_contentMessage.append({"type" : "input_text", "text": local_str_imageNameAndDescription})
-        local_list_contentMessage.append({"type" : "input_image", "image_url": param_obj_image.str_image})
+        all_images = [collection.obj_primaryImage, *collection.list_referenceImages]
+        image_files = [self._image_file(image) for image in all_images]
+        result = self._client().images.edit(
+            model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
+            image=image_files,
+            prompt=self._style_prompt() + "\n" + collection.str_sceneDescription,
+            size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
+        )
+        generated = getattr(result.data[0], "b64_json", None) if getattr(result, "data", None) else None
+        if not generated:
+            raise RuntimeError("Image generation returned no image.")
 
-
-        return local_list_contentMessage
+        session.generated_image = ImageGenerationResponse(
+            str_generatedImage=f"data:image/png;base64,{generated}"
+        )
+        return session.generated_image
