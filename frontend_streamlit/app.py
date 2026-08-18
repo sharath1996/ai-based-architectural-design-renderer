@@ -140,23 +140,35 @@ def primary_panel() -> None:
                 st.error(str(exc))
 
 
+REFERENCE_THUMBNAIL_WIDTH = 160
+
+
 def references_panel() -> None:
     st.markdown("#### Reference images")
     if st.session_state.references:
+        columns = st.columns(4)
         for index, reference in enumerate(st.session_state.references, start=1):
-            st.image(reference["bytes"], caption=f"{index}. {reference['name']}", use_container_width=True)
-            if reference["description"]:
-                st.caption(reference["description"])
+            with columns[(index - 1) % len(columns)]:
+                st.image(reference["bytes"], caption=f"{index}. {reference['name']}", width=REFERENCE_THUMBNAIL_WIDTH)
+                if reference["description"]:
+                    st.caption(reference["description"])
     else:
         st.caption("Add optional images for style, material, lighting, or composition guidance.")
 
-    with st.popover("Add reference image", use_container_width=True):
-        st.markdown("**Add one supporting image at a time.**")
-        uploaded = st.file_uploader("Reference image", type=["png", "jpg", "jpeg", "webp"], key="reference_upload")
-        description = st.text_area("Reference intent", placeholder="What should this image influence?", key="reference_description")
-        if st.button("Add reference", type="primary", disabled=uploaded is None or not st.session_state.session_id, use_container_width=True):
+    with st.popover("Add reference images", use_container_width=True):
+        st.markdown("**Add one or more supporting images at once.**")
+        uploaded_files = st.file_uploader(
+            "Reference images",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="reference_upload",
+        )
+        description = st.text_area("Reference intent", placeholder="What should these images influence?", key="reference_description")
+        if st.button("Add reference(s)", type="primary", disabled=not uploaded_files or not st.session_state.session_id, use_container_width=True):
             try:
-                upload_reference(uploaded, description)
+                for uploaded in uploaded_files:
+                    upload_reference(uploaded, description)
+                st.session_state.notice = ("success", f"Added {len(uploaded_files)} reference image(s).")
                 st.rerun()
             except RuntimeError as exc:
                 st.error(str(exc))

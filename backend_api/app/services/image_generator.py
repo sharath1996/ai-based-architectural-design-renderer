@@ -184,7 +184,7 @@ class ImageGeneratorService:
         all_images = [collection.obj_primaryImage, *collection.list_referenceImages]
         image_files = [self._image_file(image) for image in all_images]
         result = self._client().images.edit(
-            model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
+            model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2"),
             image=image_files,
             prompt=self._style_prompt() + "\n" + collection.str_sceneDescription,
             size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
