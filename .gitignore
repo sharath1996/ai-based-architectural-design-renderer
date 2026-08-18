@@ -9,5 +9,3 @@ backend_api/.env
 frontend_streamlit/.streamlit/
 .DS_Store
 Thumbs.db
-
-ref_01/
